@@ -1,0 +1,46 @@
+# Caddyfile template for obsidian-mcp. Rendered by deploy/provision.sh into
+# /etc/caddy/Caddyfile:
+#   __DOMAIN__      -> $DOMAIN (e.g. obsidian.mcp.htarrega.me)
+#   __ACME_EMAIL__  -> $ACME_EMAIL; the whole `email` line is dropped when empty
+#
+# TLS: automatic HTTPS (Let's Encrypt / ZeroSSL). DNS must be an A record
+# pointing at the VM, *DNS only* (no Cloudflare proxy), with tcp/80 and tcp/443
+# open in the OCI security list and in the host iptables.
+
+{
+	email __ACME_EMAIL__
+}
+
+__DOMAIN__ {
+	encode zstd gzip
+
+	# Attachments travel base64-encoded inside MCP JSON (~4/3 of the raw size);
+	# 50MB comfortably covers MAX_ATTACHMENT_BYTES' 25 MiB default.
+	request_body {
+		max_size 50MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		# Drop Caddy's own Server header; `defer` applies the header ops after
+		# the response is written so upstream-set values are also covered.
+		-Server
+		defer
+	}
+
+	reverse_proxy 127.0.0.1:8000 {
+		# Streamable HTTP / SSE: flush every write immediately, no buffering.
+		flush_interval -1
+		# Strip the upstream (uvicorn) Server header.
+		header_down -Server
+	}
+
+	log {
+		output file /var/log/caddy/obsidian-mcp-access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}
