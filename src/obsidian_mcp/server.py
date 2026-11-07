@@ -855,6 +855,14 @@ class _FeatureFlags:
 
 _feature_flags = _FeatureFlags.from_env()
 
+# Optional Obsidian Headless (`ob`) sync tools — see obsidian_mcp/ob. The
+# package is imported only when ENABLE_OB is set; otherwise nothing changes.
+_ob_enabled = os.environ.get("ENABLE_OB", "false").lower() in ("1", "true", "yes")
+if _ob_enabled:
+    from .ob import register_ob_tools
+
+    register_ob_tools(mcp)
+
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -2273,6 +2281,10 @@ def main() -> None:
                 logger.exception("Initial index build/reconciliation failed for vault %s", name)
 
         threading.Thread(target=initialize_index, daemon=True).start()
+    if _ob_enabled:
+        from .ob import start_ob
+
+        start_ob()  # validates OB_* settings; child is stopped at exit
     if _cfg.multi_vault:
         logger.info("Multi-vault mode: %d vault(s) configured (%s)", len(_cfg.vaults), ", ".join(_cfg.vaults))
     if _cfg.transport == "stdio":
