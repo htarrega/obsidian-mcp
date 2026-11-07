@@ -25,6 +25,7 @@ from .config import (
     ConfigError,
     get_config,
     load_vaults_file,
+    mask_error_details_from_env,
     oauth_hardening_from_env,
     reset_current_identity,
     reset_current_vault,
@@ -41,6 +42,7 @@ from .envelope import (
     read_result,
     write_result,
 )
+from .errors import UserFacingErrorMiddleware
 from .storage.filesystem import VaultStorage
 from .storage.policy import (
     InvalidFileTypeError,
@@ -803,8 +805,14 @@ _indices: dict[str, VaultIndex] = {}
 _watchers: dict[str, VaultWatcher] = {}
 _index = _CurrentVaultIndex()
 
-mcp = FastMCP(name="obsidian-mcp", instructions=_load_instructions(), auth=_build_auth())
+mcp = FastMCP(
+    name="obsidian-mcp",
+    instructions=_load_instructions(),
+    auth=_build_auth(),
+    mask_error_details=mask_error_details_from_env(),
+)
 mcp.add_middleware(VaultResolutionMiddleware())
+mcp.add_middleware(UserFacingErrorMiddleware())
 
 
 # Gates which optional plugin-format and high-impact mutation tool groups get

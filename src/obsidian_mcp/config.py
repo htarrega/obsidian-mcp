@@ -403,6 +403,7 @@ class Config:
     oauth_github_client_secret: str = field(init=False, repr=False)
     oauth_github_allowed_logins: tuple[str, ...] = field(init=False)
     oauth_hardening: OAuthHardening = field(init=False)
+    mask_error_details: bool = field(init=False)
     enable_canvas: bool = field(init=False)
     enable_excalidraw: bool = field(init=False)
     enable_kanban: bool = field(init=False)
@@ -600,6 +601,7 @@ class Config:
             os.environ.get("OAUTH_GITHUB_CLIENT_SECRET", ""),
         )
         set_value(self, "oauth_hardening", oauth_hardening_from_env())
+        set_value(self, "mask_error_details", mask_error_details_from_env())
 
         oauth_configured = bool(
             self.oauth_github_client_id or self.oauth_github_client_secret
@@ -745,6 +747,12 @@ def oauth_hardening_from_env() -> OAuthHardening:
             "OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS", DEFAULT_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS
         ),
     )
+
+
+def mask_error_details_from_env() -> bool:
+    """MASK_ERROR_DETAILS (default true): hide unexpected exception details
+    from MCP clients; expected user-facing errors still get through."""
+    return _env_bool("MASK_ERROR_DETAILS", True)
 
 
 _config: Config | None = None
