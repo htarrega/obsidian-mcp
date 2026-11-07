@@ -1,0 +1,82 @@
+# obsidian-mcp — MCP server for an Obsidian vault, behind Caddy on the same host.
+#
+# The server also supervises `ob sync --continuous` (Obsidian Headless) as a
+# child process when ENABLE_OB=true, so there is deliberately no separate ob
+# unit. Installed by deploy/provision.sh to /etc/systemd/system/.
+
+[Unit]
+Description=Obsidian MCP server (with Obsidian Headless sync)
+Documentation=https://github.com/htarrega/obsidian-mcp
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=obsidian
+Group=obsidian
+
+# Secrets and runtime configuration (root:obsidian 0640). See deploy/env.example.
+EnvironmentFile=/etc/obsidian-mcp/env
+# ob keeps its credentials under ${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-headless.
+# Pin both so everything ob writes stays inside /var/lib/obsidian (the only
+# writable path below) and matches the interactive `ob login` done via sudo.
+Environment=HOME=/var/lib/obsidian
+Environment=XDG_CONFIG_HOME=/var/lib/obsidian/.config
+# The code tree under /opt is read-only for this user; bytecode is precompiled
+# at install time (uv sync --compile-bytecode), so never try to write .pyc.
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/var/lib/obsidian
+
+# Console script from pyproject.toml [project.scripts], inside the venv created
+# by `uv sync --locked --no-dev` in the root-owned checkout.
+ExecStart=/opt/obsidian-mcp/app/.venv/bin/obsidian-remote-mcp
+
+Restart=always
+RestartSec=5
+# mixed: SIGTERM goes only to the main (Python) process, which shuts down the
+# supervised `ob` child itself; anything still alive after TimeoutStopSec gets
+# SIGKILL across the whole cgroup, so no orphaned ob process survives a stop.
+KillMode=mixed
+TimeoutStopSec=30
+
+# ---------------------------------------------------------------- hardening --
+# Files created by the server and by ob: owner-only (0600 / 0700).
+UMask=0077
+NoNewPrivileges=true
+# Whole filesystem read-only except the explicit ReadWritePaths below.
+ProtectSystem=strict
+# /home, /root and /run/user are invisible. The venv's Python lives under
+# /opt/obsidian-mcp/python (UV_PYTHON_INSTALL_DIR), not in a home directory.
+ProtectHome=true
+# Vault, ob config/credentials/sync logs, FastMCP OAuth store, locks, audit log.
+ReadWritePaths=/var/lib/obsidian
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+# Hide other users' processes in /proc. (Not ProcSubset=pid: Node's os.cpus()
+# and friends read /proc/cpuinfo and /proc/stat.)
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+# Loopback HTTP (Caddy -> 127.0.0.1:8000), outbound HTTPS (GitHub OAuth, Obsidian
+# Sync) and local sockets. AF_NETLINK is kept because libuv/glibc enumerate
+# network interfaces through it (Node os.networkInterfaces(), getifaddrs()).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# No capabilities at all: binds an unprivileged port (8000) only.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# NOTE: MemoryDenyWriteExecute=true is intentionally NOT set. The ob child runs
+# on Node.js, whose V8 JIT needs writable+executable memory mappings; with MDWE
+# Node crashes at startup (and the setting is inherited by the child).
+
+[Install]
+WantedBy=multi-user.target
