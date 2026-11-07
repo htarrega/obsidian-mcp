@@ -1,0 +1,10 @@
+# Installed to /etc/fail2ban/jail.d/obsidian-sshd.local by deploy/provision.sh.
+# __SSH_PORTS__ is replaced with SSH_ALLOWED_PORTS (comma-separated).
+[sshd]
+enabled  = true
+port     = __SSH_PORTS__
+# Ubuntu 24.04: read sshd events from the journal (no dependency on auth.log).
+backend  = systemd
+maxretry = 5
+findtime = 10m
+bantime  = 1h

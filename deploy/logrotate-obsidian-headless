@@ -1,0 +1,19 @@
+# Installed to /etc/logrotate.d/obsidian-headless by deploy/provision.sh.
+#
+# ob (Obsidian Headless) appends to <XDG_CONFIG_HOME>/obsidian-headless/sync/<id>/sync.log
+# forever and never rotates it. ob keeps the file open, so copytruncate is
+# used instead of move+signal (a few lines may be lost in the copy window).
+/var/lib/obsidian/.config/obsidian-headless/sync/*/sync.log {
+	# The directory is owned by obsidian and not root-writable-only, so
+	# logrotate refuses to act unless told which user to rotate as.
+	su obsidian obsidian
+	weekly
+	# Rotate early (at the daily logrotate run) if it grows beyond this.
+	maxsize 20M
+	rotate 4
+	compress
+	delaycompress
+	missingok
+	notifempty
+	copytruncate
+}
