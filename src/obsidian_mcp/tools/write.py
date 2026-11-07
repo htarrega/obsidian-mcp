@@ -19,6 +19,7 @@ from ..storage.locking import acquire_lock
 from ..storage.policy import ReadPermissionError, WritePermissionError
 from ..storage.revisions import read_text_for_update, revision_result
 from .read import _is_excluded
+from .safe_regex import compile_user_regex
 
 
 def _storage() -> VaultStorage:
@@ -662,13 +663,9 @@ def patch_note_text(
     if not storage.exists(path, read=True):
         raise FileNotFoundError(f"Note not found: {path!r}")
 
-    if mode == "regex":
-        try:
-            pattern = re.compile(find)
-        except re.error as exc:
-            raise ValueError(f"Invalid regex: {exc}") from exc
-    else:
-        pattern = re.compile(re.escape(find))
+    pattern = (
+        compile_user_regex(find) if mode == "regex" else re.compile(re.escape(find))
+    )
 
     lock = acquire_lock(path, lock_path=get_config().lock_path)
     try:
@@ -722,13 +719,9 @@ def find_replace_in_vault(
     cfg = get_config()
     storage = _storage()
 
-    if mode == "regex":
-        try:
-            pattern = re.compile(search)
-        except re.error as exc:
-            raise ValueError(f"Invalid regex: {exc}") from exc
-    else:
-        pattern = re.compile(re.escape(search))
+    pattern = (
+        compile_user_regex(search) if mode == "regex" else re.compile(re.escape(search))
+    )
 
     candidates: list[tuple[str, str, int]] = []
     skipped_write_protected: list[str] = []

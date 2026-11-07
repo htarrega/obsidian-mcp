@@ -404,6 +404,8 @@ class Config:
     oauth_github_allowed_logins: tuple[str, ...] = field(init=False)
     oauth_hardening: OAuthHardening = field(init=False)
     mask_error_details: bool = field(init=False)
+    regex_max_length: int = field(init=False)
+    regex_timeout_seconds: float = field(init=False)
     enable_canvas: bool = field(init=False)
     enable_excalidraw: bool = field(init=False)
     enable_kanban: bool = field(init=False)
@@ -602,6 +604,9 @@ class Config:
         )
         set_value(self, "oauth_hardening", oauth_hardening_from_env())
         set_value(self, "mask_error_details", mask_error_details_from_env())
+        regex_max_length, regex_timeout_seconds = regex_limits_from_env()
+        set_value(self, "regex_max_length", regex_max_length)
+        set_value(self, "regex_timeout_seconds", regex_timeout_seconds)
 
         oauth_configured = bool(
             self.oauth_github_client_id or self.oauth_github_client_secret
@@ -753,6 +758,19 @@ def mask_error_details_from_env() -> bool:
     """MASK_ERROR_DETAILS (default true): hide unexpected exception details
     from MCP clients; expected user-facing errors still get through."""
     return _env_bool("MASK_ERROR_DETAILS", True)
+
+
+def regex_limits_from_env() -> tuple[int, float]:
+    """(REGEX_MAX_LENGTH, REGEX_TIMEOUT_SECONDS) for caller-supplied regexes."""
+    max_length = _env_positive_int("REGEX_MAX_LENGTH", 500)
+    raw = os.environ.get("REGEX_TIMEOUT_SECONDS", "").strip() or "2"
+    try:
+        timeout = float(raw)
+    except ValueError as exc:
+        raise ConfigError("REGEX_TIMEOUT_SECONDS must be a finite positive number") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ConfigError("REGEX_TIMEOUT_SECONDS must be a finite positive number")
+    return max_length, timeout
 
 
 _config: Config | None = None
