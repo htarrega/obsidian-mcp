@@ -402,6 +402,7 @@ class Config:
     oauth_github_client_id: str = field(init=False)
     oauth_github_client_secret: str = field(init=False, repr=False)
     oauth_github_allowed_logins: tuple[str, ...] = field(init=False)
+    oauth_hardening: OAuthHardening = field(init=False)
     enable_canvas: bool = field(init=False)
     enable_excalidraw: bool = field(init=False)
     enable_kanban: bool = field(init=False)
@@ -598,6 +599,7 @@ class Config:
             "oauth_github_client_secret",
             os.environ.get("OAUTH_GITHUB_CLIENT_SECRET", ""),
         )
+        set_value(self, "oauth_hardening", oauth_hardening_from_env())
 
         oauth_configured = bool(
             self.oauth_github_client_id or self.oauth_github_client_secret
@@ -669,6 +671,80 @@ class Config:
     def read_only(self) -> bool:
         vault_read_only = self._current_vault_entry().read_only
         return self._global_read_only if vault_read_only is None else vault_read_only
+
+
+# ── Hardening settings ───────────────────────────────────────────────────────
+# Plain env readers (not tied to Config) because server.py needs some of them
+# at import time, before VAULT_PATH/VAULTS_CONFIG are guaranteed to be set.
+# Config.__init__ calls them too, so invalid values fail loudly at startup.
+
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off")
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    raise ConfigError(f"{name} must be a boolean (true/false)")
+
+
+def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Comma-separated list; unset or blank falls back to the default."""
+    items = tuple(item.strip() for item in os.environ.get(name, "").split(",") if item.strip())
+    return items or default
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ConfigError(f"{name} must be a positive integer")
+    return value
+
+
+DEFAULT_OAUTH_GITHUB_SCOPES = ("read:user",)
+# claude.ai remote-connector callback (Anthropic help center, "Building custom
+# connectors via remote MCP servers"), plus the claude.com variant the same
+# article says to allowlist too, plus loopback on any port for local clients
+# (Claude Code, MCP Inspector, mcp-remote).
+DEFAULT_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS = (
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+)
+DEFAULT_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS = 30 * 24 * 3600
+
+
+@dataclass(frozen=True)
+class OAuthHardening:
+    github_scopes: tuple[str, ...]
+    enable_cimd: bool
+    allowed_client_redirect_uris: tuple[str, ...]
+    access_token_expiry_seconds: int
+
+
+def oauth_hardening_from_env() -> OAuthHardening:
+    return OAuthHardening(
+        github_scopes=_env_list("OAUTH_GITHUB_SCOPES", DEFAULT_OAUTH_GITHUB_SCOPES),
+        enable_cimd=_env_bool("OAUTH_ENABLE_CIMD", False),
+        allowed_client_redirect_uris=_env_list(
+            "OAUTH_ALLOWED_CLIENT_REDIRECT_URIS", DEFAULT_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS
+        ),
+        access_token_expiry_seconds=_env_positive_int(
+            "OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS", DEFAULT_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS
+        ),
+    )
 
 
 _config: Config | None = None

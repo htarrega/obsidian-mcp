@@ -25,6 +25,7 @@ from .config import (
     ConfigError,
     get_config,
     load_vaults_file,
+    oauth_hardening_from_env,
     reset_current_identity,
     reset_current_vault,
     set_current_identity,
@@ -601,12 +602,25 @@ def _build_auth() -> AuthProvider | None:
         # data directory (FASTMCP_HOME, defaults to a platformdirs path).
         # Mount that directory as a volume in Docker, or set FASTMCP_HOME to a
         # path inside an existing mount, or logins won't survive a restart.
+        hardening = oauth_hardening_from_env()
         github_provider = GitHubProvider(
             client_id=client_id,
             client_secret=client_secret,
             base_url=base_url,
             # Otherwise every MCP request waits on GitHub /user and /user/repos.
             cache_ttl_seconds=300,
+            # Least privilege: only the login is needed (library default is
+            # "user", which also grants profile write access).
+            required_scopes=list(hardening.github_scopes),
+            # Only known MCP client callbacks may receive authorization codes
+            # (library default None = any redirect URI is accepted via DCR).
+            allowed_client_redirect_uris=list(hardening.allowed_client_redirect_uris),
+            # URL-based client IDs (CIMD) make the server fetch client-chosen URLs.
+            enable_cimd=hardening.enable_cimd,
+            # GitHub OAuth-app tokens carry no expiry, so the issued FastMCP JWT
+            # would otherwise live 1 year; this caps it.
+            fastmcp_access_token_expiry_seconds=hardening.access_token_expiry_seconds,
+            require_authorization_consent=True,
         )
         # Relies on OAuthProxy's private _token_validator attribute — the only
         # hook that runs at token-exchange time, before an allowlist check
@@ -621,7 +635,7 @@ def _build_auth() -> AuthProvider | None:
     if github_provider and api_key_verifier:
         logger.info("API key auth enabled (alongside GitHub OAuth)")
         # required_scopes must be cleared here: MultiAuth defaults it to the
-        # server's (GitHubProvider's, i.e. ["user"]) and enforces it across
+        # server's (GitHubProvider's, i.e. OAUTH_GITHUB_SCOPES) and enforces it across
         # every verifier. _APIKeyAuthProvider's tokens carry scopes=[] since
         # a static key has no OAuth scopes, so without this override every
         # API-key request would fail with "insufficient_scope" even though
