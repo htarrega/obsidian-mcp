@@ -1670,7 +1670,15 @@ async def attachment_route(request: Request) -> Response:
     """
     cfg = get_config()
     path = request.path_params["path"]
-    method = request.method
+    # Starlette auto-adds HEAD to every GET route. HEAD is a read: it uses the
+    # GET auth/read policy and never reaches the write branch. Anything else
+    # besides GET/PUT is rejected outright.
+    is_head = request.method == "HEAD"
+    method = "GET" if is_head else request.method
+    if method not in ("GET", "PUT"):
+        return JSONResponse(
+            {"error": "method not allowed"}, status_code=405, headers={"Allow": "GET, HEAD, PUT"}
+        )
 
     # Authenticate and choose a vault before any path-policy check so callers
     # cannot probe protected path boundaries through response differences.
@@ -1710,7 +1718,14 @@ async def attachment_route(request: Request) -> Response:
             except FileNotFoundError:
                 return JSONResponse({"error": "Attachment not found"}, status_code=404)
             mime, _ = mimetypes.guess_type(path)
-            return Response(data, media_type=mime or "application/octet-stream")
+            return Response(
+                b"" if is_head else data,
+                media_type=mime or "application/octet-stream",
+                headers={"Content-Length": str(len(data))},
+            )
+
+        if method != "PUT":  # defensive: only PUT may reach the write branch
+            return JSONResponse({"error": "method not allowed"}, status_code=405)
 
         content_length = request.headers.get("content-length")
         if content_length is not None:
