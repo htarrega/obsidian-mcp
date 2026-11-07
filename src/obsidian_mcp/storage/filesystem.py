@@ -805,7 +805,12 @@ class VaultStorage:
             return []
 
     def trash_info(self, trashed_name: str) -> TrashEntry:
-        if not trashed_name or Path(trashed_name).name != trashed_name:
+        if (
+            not trashed_name
+            or trashed_name in (".", "..")
+            or any(ch in trashed_name for ch in ("/", "\\", "\0"))
+            or Path(trashed_name).name != trashed_name
+        ):
             raise VaultPathError("Trash item must be a bare filename")
         with _opened_dir(self.policy.root, ".trash") as trash_fd:
             info = _ensure_not_symlink(trash_fd, trashed_name)
