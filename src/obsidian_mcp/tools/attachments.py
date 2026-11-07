@@ -24,6 +24,28 @@ _ALLOWED_ATTACHMENT_SUFFIXES = {
 }
 
 
+def attachment_download_headers(path: str) -> dict[str, str]:
+    """Security headers for serving a vault file over HTTP.
+
+    Forces a download (never inline rendering), disables MIME sniffing and
+    sandboxes the response, so an uploaded HTML/SVG/PDF can't run script in
+    the server's origin. The filename is reduced to the basename; the plain
+    ``filename=`` gets an ASCII-only, quote/backslash-free fallback and the
+    exact name goes in RFC 5987 ``filename*=``.
+    """
+    name = path.replace("\\", "/").rsplit("/", 1)[-1] or "download"
+    fallback = "".join(
+        ch if 0x20 <= ord(ch) < 0x7F and ch not in '"\\;' else "_" for ch in name
+    )
+    return {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        "Content-Disposition": (
+            f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
+        ),
+    }
+
+
 class AttachmentTooLargeError(ValueError):
     """An attachment exceeds the configured write-size limit."""
 

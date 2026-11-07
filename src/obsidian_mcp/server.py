@@ -52,6 +52,7 @@ from .storage.watcher import VaultWatcher
 from .tools.attachments import (
     AttachmentTooLargeError,
     add_attachment,
+    attachment_download_headers,
     create_attachment_token,
     list_attachments,
     read_attachment,
@@ -1721,7 +1722,7 @@ async def attachment_route(request: Request) -> Response:
             return Response(
                 b"" if is_head else data,
                 media_type=mime or "application/octet-stream",
-                headers={"Content-Length": str(len(data))},
+                headers={"Content-Length": str(len(data)), **attachment_download_headers(path)},
             )
 
         if method != "PUT":  # defensive: only PUT may reach the write branch
