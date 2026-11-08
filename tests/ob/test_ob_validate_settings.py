@@ -98,6 +98,7 @@ def test_settings_default_to_vault_path(tmp_path):
         60.0,
         300.0,
     )
+    assert settings.restart_cooldown == 60.0
     assert settings.sync_argv() == ["ob", "sync", "--path", str(tmp_path.resolve()), "--continuous"]
 
 
@@ -112,8 +113,10 @@ def test_settings_ob_vault_path_overrides(tmp_path):
             "OB_LOG_LINES": "10",
             "OB_COMMAND_TIMEOUT": "2.5",
             "OB_RESTART_BACKOFF_MAX": "30",
+            "OB_RESTART_COOLDOWN": "0",
         }
     )
+    assert settings.restart_cooldown == 0.0
     assert settings.vault_path == other.resolve()
     assert settings.ob_bin == "/opt/ob/bin/ob"
     assert (settings.log_lines, settings.command_timeout, settings.restart_backoff_max) == (
@@ -141,6 +144,9 @@ def test_settings_multi_vault_requires_ob_vault_path(tmp_path):
         {"OB_LOG_LINES": "many"},
         {"OB_COMMAND_TIMEOUT": "-1"},
         {"OB_RESTART_BACKOFF_MAX": "inf"},
+        {"OB_RESTART_COOLDOWN": "-1"},
+        {"OB_RESTART_COOLDOWN": "nan"},
+        {"OB_RESTART_COOLDOWN": "soon"},
     ],
 )
 def test_settings_reject_invalid_values(tmp_path, env):

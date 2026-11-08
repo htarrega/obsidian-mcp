@@ -83,6 +83,17 @@ def auth_token_file(environ: Mapping[str, str] | None = None) -> Path:
     return Path(base) / "obsidian-headless" / "auth_token"
 
 
+def _non_negative_float(env: Mapping[str, str], name: str, default: float) -> float:
+    raw = env.get(name, "").strip() or str(default)
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a finite number >= 0") from exc
+    if not math.isfinite(value) or value < 0:
+        raise ConfigError(f"{name} must be a finite number >= 0")
+    return value
+
+
 def _resolve_vault_path(env: Mapping[str, str]) -> Path:
     raw = env.get("OB_VAULT_PATH", "").strip()
     if not raw:
@@ -109,6 +120,7 @@ class ObSettings:
     log_lines: int = 1000
     command_timeout: float = 60.0
     restart_backoff_max: float = 300.0
+    restart_cooldown: float = 60.0
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ObSettings:
@@ -120,6 +132,7 @@ class ObSettings:
             log_lines=_positive_int(env, "OB_LOG_LINES", 1000),
             command_timeout=_positive_float(env, "OB_COMMAND_TIMEOUT", 60.0),
             restart_backoff_max=_positive_float(env, "OB_RESTART_BACKOFF_MAX", 300.0),
+            restart_cooldown=_non_negative_float(env, "OB_RESTART_COOLDOWN", 60.0),
         )
 
     def sync_argv(self) -> list[str]:

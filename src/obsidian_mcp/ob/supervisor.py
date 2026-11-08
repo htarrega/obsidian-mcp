@@ -55,6 +55,10 @@ _FATAL_EXIT_REASONS = {
 }
 
 
+class SupervisorBusyError(RuntimeError):
+    """A control operation could not run now (cooldown or another in flight)."""
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -70,6 +74,8 @@ class SyncSupervisor:
         backoff_max: float = 300.0,
         stable_after: float = 60.0,
         stop_timeout: float = 10.0,
+        restart_cooldown: float = 0.0,
+        control_timeout: float = 30.0,
     ) -> None:
         self.argv = list(argv)
         self.cwd = cwd
@@ -77,6 +83,8 @@ class SyncSupervisor:
         self.backoff_max = backoff_max
         self.stable_after = stable_after
         self.stop_timeout = stop_timeout
+        self.restart_cooldown = restart_cooldown
+        self.control_timeout = control_timeout
 
         self._lock = threading.RLock()
         self._control = threading.Lock()  # serialises start/stop/restart callers
@@ -95,6 +103,7 @@ class SyncSupervisor:
         self._last_fully_synced_at: str | None = None
         self._next_restart_monotonic: float | None = None
         self._failure_reason: str | None = None
+        self._last_start_monotonic: float | None = None
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -109,8 +118,21 @@ class SyncSupervisor:
             self._stop_locked()
 
     def restart(self) -> None:
-        """Stop the child (SIGTERM, wait) and launch a fresh one."""
-        with self._control:
+        """Stop the child (SIGTERM, wait) and launch a fresh one.
+
+        Raises :class:`SupervisorBusyError` if the last (re)start was less
+        than ``restart_cooldown`` seconds ago, or if another control
+        operation does not finish within ``control_timeout`` seconds.
+        """
+        with self._controlled():
+            if self._last_start_monotonic is not None and self.restart_cooldown > 0:
+                elapsed = time.monotonic() - self._last_start_monotonic
+                if elapsed < self.restart_cooldown:
+                    raise SupervisorBusyError(
+                        f"sync was (re)started {elapsed:.0f}s ago; wait "
+                        f"{self.restart_cooldown - elapsed:.0f}s more before restarting "
+                        f"(OB_RESTART_COOLDOWN={self.restart_cooldown:g})"
+                    )
             self._stop_locked()
             self._start_locked()
 
@@ -123,12 +145,24 @@ class SyncSupervisor:
         be down while the config is rewritten and restarted afterwards. The
         child is relaunched even if the block raises.
         """
-        with self._control:
+        with self._controlled():
             self._stop_locked()
             try:
                 yield
             finally:
                 self._start_locked()
+
+    @contextmanager
+    def _controlled(self) -> Iterator[None]:
+        """Hold the control lock, giving up after ``control_timeout``."""
+        if not self._control.acquire(timeout=self.control_timeout):
+            raise SupervisorBusyError(
+                "another sync start/stop/restart is still in progress; try again later"
+            )
+        try:
+            yield
+        finally:
+            self._control.release()
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -183,6 +217,7 @@ class SyncSupervisor:
             self._state = "starting"
             self._failure_reason = None
             self._next_restart_monotonic = None
+            self._last_start_monotonic = time.monotonic()
         thread = threading.Thread(
             target=self._monitor, args=(stop_event,), name="ob-sync-supervisor", daemon=True
         )
@@ -312,6 +347,7 @@ def make_supervisor(settings: Any, **overrides: Any) -> SyncSupervisor:
     kwargs: dict[str, Any] = {
         "log_lines": settings.log_lines,
         "backoff_max": settings.restart_backoff_max,
+        "restart_cooldown": settings.restart_cooldown,
     }
     kwargs.update(overrides)
     return SyncSupervisor(settings.sync_argv(), child_cwd(settings.vault_path), **kwargs)

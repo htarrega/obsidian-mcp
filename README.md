@@ -181,6 +181,7 @@ tool is registered and no process is started.
 | `OB_LOG_LINES` | `1000` | Ring-buffer size (max lines `sync_logs` returns) |
 | `OB_COMMAND_TIMEOUT` | `60` | Seconds before a one-shot `ob` command is killed |
 | `OB_RESTART_BACKOFF_MAX` | `300` | Maximum seconds between restarts of a crashing sync child |
+| `OB_RESTART_COOLDOWN` | `60` | `sync_restart` is refused (tool error) if the child was (re)started less than this many seconds ago; `0` disables it |
 
 `READ_ONLY=true` disables only the admin tier; the ops tier depends only on
 `ENABLE_OB_OPS`.
@@ -193,7 +194,7 @@ tool is registered and no process is started.
 | read-only | `sync_logs(lines=100)` | Tail of the redacted log buffer, clamped to 1..`OB_LOG_LINES` |
 | read-only | `ob_info` | `ob --version`, this vault's `sync-list-local` entry, device name, whether an auth token file/env exists (boolean only). No network |
 | read-only | `list_remote_vaults` | `ob sync-list-remote --json` (network) |
-| ops | `sync_restart` | SIGTERM the child, wait, relaunch; returns the new status |
+| ops | `sync_restart` | SIGTERM the child, wait, relaunch; returns the new status. Refused within `OB_RESTART_COOLDOWN` seconds of the last (re)start, or if another start/stop is still in progress after 30s |
 | admin | `sync_set_excluded_folders(folders)` | Persistent: replaces excluded folders (relative, no `..`, no leading `/`, no commas; `[]` clears) |
 | admin | `sync_set_file_types(types)` | Persistent: `image`, `audio`, `video`, `pdf`, `unsupported` (`[]` clears) |
 | admin | `sync_set_configs(categories)` | Persistent: `app`, `appearance`, `appearance-data`, `hotkey`, `core-plugin`, `core-plugin-data`, `community-plugin`, `community-plugin-data` (`[]` clears) |

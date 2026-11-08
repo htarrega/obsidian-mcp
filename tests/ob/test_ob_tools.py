@@ -198,3 +198,39 @@ def test_start_ob_registers_auth_token_file_for_redaction(fake_ob, tmp_path, mon
             service_mod.set_service(None)
     finally:
         redact_mod.clear_registered_secrets()
+
+
+def test_sync_restart_cooldown(fake_ob, ob_service, wait):
+    svc = ob_service(restart_cooldown=60.0)
+    wait(lambda: fake_ob.live_sync_pids())
+    pid = svc.supervisor.pid
+    with pytest.raises(ToolError, match="OB_RESTART_COOLDOWN"):
+        tools.sync_restart()
+    assert svc.supervisor.pid == pid
+    assert len([a for a in fake_ob.argvs() if a[0] == "sync"]) == 1
+
+    svc.supervisor.restart_cooldown = 0.2
+    wait(lambda: _try_restart())
+    wait(lambda: svc.supervisor.pid not in (None, pid))
+
+
+def _try_restart() -> bool:
+    try:
+        tools.sync_restart()
+    except ToolError:
+        return False
+    return True
+
+
+def test_sync_restart_gives_up_when_control_lock_is_held(fake_ob, ob_service):
+    svc = ob_service(start=False)
+    svc.supervisor.control_timeout = 0.2
+    assert svc.supervisor._control.acquire()
+    try:
+        with pytest.raises(ToolError, match="in progress"):
+            tools.sync_restart()
+        with pytest.raises(ToolError, match="not changed"):
+            tools.sync_set_conflict_strategy("conflict")
+    finally:
+        svc.supervisor._control.release()
+    assert not any(argv[0] == "sync-config" for argv in fake_ob.argvs())

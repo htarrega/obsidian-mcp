@@ -25,6 +25,7 @@ from .redact import redact_obj
 from .runner import ObCommandError, ObError
 from .service import ObService, get_service
 from .settings import ObFlags, auth_token_file
+from .supervisor import SupervisorBusyError
 from .validate import (
     CONFIG_CATEGORIES,
     FILE_TYPES,
@@ -186,10 +187,14 @@ def sync_restart() -> dict:
 
     Sends SIGTERM to the running sync process, waits for it to exit (SIGKILL
     after ~10s), launches a fresh one and returns the new supervisor status.
-    Does not change any sync configuration.
+    Does not change any sync configuration. Refused if the process was
+    (re)started less than OB_RESTART_COOLDOWN seconds ago.
     """
     service = _service()
-    service.supervisor.restart()
+    try:
+        service.supervisor.restart()
+    except SupervisorBusyError as exc:
+        raise ToolError(str(exc)) from exc
     return read_result(None, {"supervisor": service.supervisor.status()}, meta={"action": "restarted"})
 
 
@@ -200,15 +205,18 @@ def _apply_sync_config(flag: str, value: str, setting: str) -> dict:
     service = _service()
     args = ["sync-config", "--path", service.runner.vault_arg, flag, value, "--json"]
     output: Any = None
-    with service.supervisor.paused():
-        try:
-            result = service.runner.run(args)
-        except ObError as exc:
-            raise ToolError(f"sync config not changed: {exc}") from exc
-        try:
-            output = result.json()
-        except ObCommandError:
-            output = None
+    try:
+        with service.supervisor.paused():
+            try:
+                result = service.runner.run(args)
+            except ObError as exc:
+                raise ToolError(f"sync config not changed: {exc}") from exc
+            try:
+                output = result.json()
+            except ObCommandError:
+                output = None
+    except SupervisorBusyError as exc:
+        raise ToolError(f"sync config not changed: {exc}") from exc
     if isinstance(output, dict) and output:
         config: dict[str, Any] | None = output
         config_error = None

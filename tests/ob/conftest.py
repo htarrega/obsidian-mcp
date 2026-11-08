@@ -29,6 +29,7 @@ _OB_ENV = (
     "OB_LOG_LINES",
     "OB_COMMAND_TIMEOUT",
     "OB_RESTART_BACKOFF_MAX",
+    "OB_RESTART_COOLDOWN",
     "OBSIDIAN_AUTH_TOKEN",
 )
 
@@ -69,6 +70,7 @@ class FakeOb:
             "log_lines": 50,
             "command_timeout": 5.0,
             "restart_backoff_max": 0.6,
+            "restart_cooldown": 0.0,
         }
         values.update(overrides)
         return ObSettings(**values)
