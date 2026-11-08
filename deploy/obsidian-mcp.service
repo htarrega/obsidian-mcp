@@ -75,6 +75,26 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 # No capabilities at all: binds an unprivileged port (8000) only.
 CapabilityBoundingSet=
 AmbientCapabilities=
+# Syscall allowlist for ordinary services; anything else fails with EPERM
+# instead of killing the process. Covers CPython and Node/V8: mmap/mprotect/
+# membarrier (@default), clone3 (@process), memfd_create (@ipc) and libuv's
+# io_uring (@aio) are all in @system-service. pkey_* (@pkey) is not: V8 only
+# uses memory protection keys opportunistically and falls back to mprotect when
+# pkey_alloc fails (and arm64 has no PKU anyway). If a future ob/Node release
+# trips over the filter, find the syscall (strace -f / audit log) and add it
+# with a second SystemCallFilter= line rather than dropping the filter.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Drop SysV/POSIX IPC objects owned by the user when the service stops.
+RemoveIPC=true
+
+# Resource caps (Python server + Node ob child share the cgroup): reclaim
+# pressure from 1 GiB, hard OOM-kill limit at 1.5 GiB; bounded task count
+# (threads included) so a runaway child cannot fork-bomb the VM.
+MemoryHigh=1G
+MemoryMax=1500M
+TasksMax=256
+
 # NOTE: MemoryDenyWriteExecute=true is intentionally NOT set. The ob child runs
 # on Node.js, whose V8 JIT needs writable+executable memory mappings; with MDWE
 # Node crashes at startup (and the setting is inherited by the child).
