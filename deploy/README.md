@@ -65,6 +65,10 @@ Python (que cierra a `ob`), y lo que quede vivo tras 30 s recibe SIGKILL.
 | `sshd-hardening.conf` | `/etc/ssh/sshd_config.d/00-obsidian-hardening.conf` |
 | `logrotate-obsidian-headless` | `/etc/logrotate.d/obsidian-headless` |
 | `fail2ban-sshd.local` | `/etc/fail2ban/jail.d/obsidian-sshd.local` |
+| `fail2ban-caddy-oauth.conf` | `/etc/fail2ban/filter.d/obsidian-caddy-oauth.conf` (filtro sobre el access log JSON de Caddy) |
+| `fail2ban-caddy-oauth.local` | `/etc/fail2ban/jail.d/obsidian-caddy-oauth.local` (jails `obsidian-oauth-register` y `obsidian-oauth-authorize`) |
+| `oauth-store-usage.sh` | `/usr/local/sbin/obsidian-mcp-oauth-usage` |
+| `obsidian-mcp-oauth-usage.{service,timer}` | `/etc/systemd/system/` (aviso semanal si `FASTMCP_HOME` > 200 MB) |
 
 ## Recursos OCI
 
@@ -139,7 +143,10 @@ puertos SSH) insertadas **antes** del `REJECT` de Oracle y guardadas con
 clon del repo en el commit pedido + `uv sync --locked --no-dev`;
 `/etc/obsidian-mcp/env` desde `env.example` (solo si no existe); unidad systemd
 habilitada; Caddy desde el repo oficial (Cloudsmith) con `caddy validate`;
-logrotate de `sync.log`; jail `sshd` de fail2ban. Al final imprime un resumen
+logrotate de `sync.log`; jails de fail2ban `sshd` y de los endpoints OAuth
+sin autenticar (`POST /register`, `GET /authorize`, leídos del access log JSON
+de Caddy); timer semanal que avisa en el journal si `FASTMCP_HOME` supera
+200 MB (no borra nada). Al final imprime un resumen
 con versiones y commit — **anota la versión de Caddy** en la tabla de arriba.
 
 La primera vez el servicio **no arranca**: el env todavía tiene `RELLENAR`.
@@ -239,6 +246,12 @@ sudo ss -tlnp            # 8000 (python) y 2019 (caddy admin) SOLO en 127.0.0.1;
 sudo iptables -L INPUT -n --line-numbers   # ACCEPT 80/443 por encima del REJECT
 sudo sshd -T | grep -E 'passwordauthentication|permitrootlogin'
 sudo fail2ban-client status sshd
+sudo fail2ban-client status obsidian-oauth-register    # >20 POST /register en 10 min -> ban 1 h
+sudo fail2ban-client status obsidian-oauth-authorize   # >60 GET /authorize en 10 min -> ban 1 h
+sudo fail2ban-regex /var/log/caddy/obsidian-mcp-access.log \
+  '/etc/fail2ban/filter.d/obsidian-caddy-oauth.conf[oauth_method=POST, oauth_path=/register]'
+systemctl list-timers obsidian-mcp-oauth-usage.timer
+journalctl -u obsidian-mcp-oauth-usage -n 5     # tamaño de FASTMCP_HOME (solo avisa, nunca borra)
 systemd-analyze security obsidian-mcp      # exposición ~2.9 "OK"
 sysctl fs.inotify.max_user_watches fs.inotify.max_user_instances
 pgrep -u obsidian -a                         # python + node (ob sync --continuous)

@@ -37,10 +37,16 @@ __DOMAIN__ {
 		header_down -Server
 	}
 
+	# JSON access log, one line per request. fail2ban reads it to rate-limit
+	# the unauthenticated OAuth endpoints (POST /register, GET /authorize):
+	# see deploy/fail2ban-caddy-oauth.{conf,local}. Keep the path and the
+	# json format in sync with those files.
 	log {
 		output file /var/log/caddy/obsidian-mcp-access.log {
 			roll_size 10MiB
 			roll_keep 5
+			roll_keep_for 720h
 		}
+		format json
 	}
 }

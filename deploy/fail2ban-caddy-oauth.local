@@ -1,0 +1,34 @@
+# Installed to /etc/fail2ban/jail.d/obsidian-caddy-oauth.local by
+# deploy/provision.sh. Rate-limits the unauthenticated OAuth endpoints exposed
+# by the MCP server (Dynamic Client Registration writes one file per client
+# into FASTMCP_HOME, so /register spam fills the disk):
+#
+#   * more than 20 POST /register  in 10 minutes -> banned for 1 hour
+#   * more than 60 GET  /authorize in 10 minutes -> banned for 1 hour
+#
+# Source: Caddy's JSON access log (see Caddyfile.template). Bans are applied
+# with iptables on tcp/80 and tcp/443.
+
+[obsidian-oauth-register]
+enabled   = true
+filter    = obsidian-caddy-oauth[oauth_method=POST, oauth_path=/register]
+logpath   = /var/log/caddy/obsidian-mcp-access.log
+backend   = polling
+maxretry  = 21
+findtime  = 10m
+bantime   = 1h
+banaction = iptables-multiport
+port      = 80,443
+protocol  = tcp
+
+[obsidian-oauth-authorize]
+enabled   = true
+filter    = obsidian-caddy-oauth[oauth_method=GET, oauth_path=/authorize]
+logpath   = /var/log/caddy/obsidian-mcp-access.log
+backend   = polling
+maxretry  = 61
+findtime  = 10m
+bantime   = 1h
+banaction = iptables-multiport
+port      = 80,443
+protocol  = tcp

@@ -1,0 +1,18 @@
+# Installed to /etc/systemd/system/ by deploy/provision.sh; triggered weekly by
+# obsidian-mcp-oauth-usage.timer. Only reads and reports (journalctl -u
+# obsidian-mcp-oauth-usage); never deletes OAuth data.
+[Unit]
+Description=Warn when the obsidian-mcp OAuth store (FASTMCP_HOME) grows too large
+
+[Service]
+Type=oneshot
+User=obsidian
+Group=obsidian
+ExecStart=/usr/local/sbin/obsidian-mcp-oauth-usage /var/lib/obsidian/mcp-data 200
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+PrivateDevices=true
+CapabilityBoundingSet=

@@ -104,7 +104,9 @@ validate() {
 	[[ -z $ACME_EMAIL || $ACME_EMAIL =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die "ACME_EMAIL looks invalid"
 	local f
 	for f in obsidian-mcp.service Caddyfile.template env.example sysctl-obsidian.conf \
-		sshd-hardening.conf logrotate-obsidian-headless fail2ban-sshd.local; do
+		sshd-hardening.conf logrotate-obsidian-headless fail2ban-sshd.local \
+		fail2ban-caddy-oauth.conf fail2ban-caddy-oauth.local oauth-store-usage.sh \
+		obsidian-mcp-oauth-usage.service obsidian-mcp-oauth-usage.timer; do
 		[[ -f $SCRIPT_DIR/$f ]] || die "missing $SCRIPT_DIR/$f (copy the whole deploy/ directory)"
 	done
 	if [[ $(dpkg --print-architecture) != arm64 ]]; then
@@ -341,10 +343,19 @@ step_logrotate() {
 }
 
 step_fail2ban() {
-	log "fail2ban sshd jail"
+	log "fail2ban jails (sshd, OAuth endpoints)"
 	sed "s/__SSH_PORTS__/${SSH_ALLOWED_PORTS}/" "$SCRIPT_DIR/fail2ban-sshd.local" \
 		>/etc/fail2ban/jail.d/obsidian-sshd.local
 	chmod 0644 /etc/fail2ban/jail.d/obsidian-sshd.local
+	# Rate-limit unauthenticated POST /register (DCR) and GET /authorize from
+	# Caddy's JSON access log. The log must exist or fail2ban refuses to start
+	# the jail, so create it (caddy-owned) before the first request.
+	install -m 0644 "$SCRIPT_DIR/fail2ban-caddy-oauth.conf" /etc/fail2ban/filter.d/obsidian-caddy-oauth.conf
+	install -m 0644 "$SCRIPT_DIR/fail2ban-caddy-oauth.local" /etc/fail2ban/jail.d/obsidian-caddy-oauth.local
+	local access_log=/var/log/caddy/obsidian-mcp-access.log
+	if [[ ! -e $access_log ]]; then
+		install -o caddy -g caddy -m 0644 /dev/null "$access_log"
+	fi
 	fail2ban-client -t >/dev/null || die "fail2ban configuration test failed"
 	systemctl enable fail2ban.service
 	systemctl restart fail2ban.service
@@ -376,6 +387,15 @@ step_caddy() {
 	else
 		systemctl start caddy.service
 	fi
+}
+
+step_oauth_usage_timer() {
+	log "Weekly OAuth store size check (FASTMCP_HOME, warns above 200 MB)"
+	install -m 0755 "$SCRIPT_DIR/oauth-store-usage.sh" /usr/local/sbin/obsidian-mcp-oauth-usage
+	install -m 0644 "$SCRIPT_DIR/obsidian-mcp-oauth-usage.service" "$SCRIPT_DIR/obsidian-mcp-oauth-usage.timer" \
+		/etc/systemd/system/
+	systemctl daemon-reload
+	systemctl enable --now obsidian-mcp-oauth-usage.timer
 }
 
 step_service() {
@@ -449,8 +469,10 @@ main() {
 	step_app
 	step_env
 	step_logrotate
-	step_fail2ban
+	# After Caddy: the OAuth jails read Caddy's access log (and its user).
 	step_caddy
+	step_fail2ban
+	step_oauth_usage_timer
 	step_service
 	summary
 }

@@ -1,0 +1,11 @@
+# Installed to /etc/systemd/system/ by deploy/provision.sh.
+[Unit]
+Description=Weekly size check of the obsidian-mcp OAuth store
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
