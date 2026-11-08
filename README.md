@@ -118,6 +118,7 @@ Add to your MCP config (`~/.claude/mcp.json` or `claude_desktop_config.json`):
 | **[Docker & Deployment](docs/deployment.md)** | Compose, the hardened home-server profile, health checks, the schema-lint cron |
 | **[Vault Conventions](docs/vault-conventions.md)** | Teaching the AI your vault's structure via `_AI_INSTRUCTIONS.md` |
 | **[Architecture](docs/architecture.md)** | Source layout and the authorization/concurrency layers underneath the tools |
+| **[Arquitectura del despliegue (ES)](docs/arquitectura.md)** | Diagramas de sistema (TB): fronteras de confianza, flujos, bucles de realimentación, OAuth, `ob` y despliegue en Oracle |
 | **[Development](docs/development.md)** | Running tests, linting, and the local HTTP smoke test |
 
 ## ob CLI wrapper

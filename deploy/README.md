@@ -11,6 +11,8 @@ vault sincronizado vía Obsidian Sync y Caddy delante con TLS automático.
 
 El dominio es configurable (`DOMAIN` / `--domain`) en todos los scripts y plantillas.
 
+> Diagramas de la arquitectura: [docs/arquitectura.md](../docs/arquitectura.md)
+
 ## Arquitectura
 
 ```
