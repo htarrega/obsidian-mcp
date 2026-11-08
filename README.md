@@ -73,6 +73,19 @@ That's enough for local `stdio` use. For network transports, path
 restrictions, optional plugin-format tools, and every other variable, see
 **[Configuration](docs/configuration.md)**.
 
+Security settings (all optional, hardened defaults; details in
+[Configuration → Security hardening](docs/configuration.md#security-hardening)):
+
+| Variable | Default |
+|---|---|
+| `MASK_ERROR_DETAILS` | `true` |
+| `REGEX_MAX_LENGTH` | `500` |
+| `REGEX_TIMEOUT_SECONDS` | `2` |
+| `OAUTH_GITHUB_SCOPES` | `read:user` |
+| `OAUTH_ALLOWED_CLIENT_REDIRECT_URIS` | claude.ai / claude.com MCP callbacks, `http://localhost:*`, `http://127.0.0.1:*` |
+| `OAUTH_ENABLE_CIMD` | `false` |
+| `OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS` | `2592000` (30 days) |
+
 ## Usage with Claude Code / Desktop
 
 Add to your MCP config (`~/.claude/mcp.json` or `claude_desktop_config.json`):

@@ -85,6 +85,23 @@ of that.
 # MAX_ATTACHMENT_BYTES=26214400  # 25 MiB default, applies to MCP and HTTP writes
 ```
 
+## Security hardening
+
+All optional; the defaults are the hardened setting.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `MASK_ERROR_DETAILS` | `true` | Hide details of unexpected tool exceptions from MCP clients. Expected errors (invalid arguments, policy denials such as "Write access denied", note not found) still return their message; OS errors lose their filename. |
+| `REGEX_MAX_LENGTH` | `500` | Maximum length of a caller-supplied regex (`search_notes_tool` `mode=regex`, `patch_note_text_tool` and `find_replace_in_vault_tool` `mode=regex`). |
+| `REGEX_TIMEOUT_SECONDS` | `2` | Per-match time limit for those regexes. The first timeout aborts the whole call, and nothing is written. |
+| `OAUTH_GITHUB_SCOPES` | `read:user` | GitHub scopes requested and required (comma-separated). Only the login is needed. |
+| `OAUTH_ALLOWED_CLIENT_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback,http://localhost:*,http://127.0.0.1:*` | MCP client redirect URIs the OAuth server accepts (comma-separated; `*` matches any port, or any subdomain as `*.example.com`). Add your client's callback here if it is not claude.ai or a local tool. |
+| `OAUTH_ENABLE_CIMD` | `false` | Allow URL-based client IDs (Client ID Metadata Documents), which make the server fetch client-chosen URLs. |
+| `OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS` | `2592000` (30 days) | Lifetime of the access token the server issues to MCP clients after GitHub login. GitHub OAuth-app tokens never expire, so without this the token lived 1 year. |
+
+The `OAUTH_*` variables only apply when GitHub OAuth is configured (see
+[Remote Setup](remote-setup.md)). Invalid values stop the server at startup.
+
 ## Indexing and sync
 
 ```env
