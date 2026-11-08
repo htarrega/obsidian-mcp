@@ -289,11 +289,12 @@ y `_AI_INSTRUCTIONS.md` además de lo que añadas.
 **Solo lectura temporal**: `READ_ONLY=true` y reiniciar.
 
 **`ENABLE_OB_ADMIN`**: déjalo en `false`. Actívalo solo de forma puntual para
-operar `ob` desde un cliente de confianza (p. ej. reconfigurar la sincronización
-sin SSH), y vuelve a `false` al terminar: esas herramientas cambian la
-configuración de sync del vault, y cualquier sesión MCP autenticada podría
-usarlas. Para el día a día bastan `ENABLE_OB_OPS=true` (estado y log de sync)
-y SSH.
+cambiar la configuración de sync sin SSH (carpetas excluidas, tipos de fichero,
+categorías de config, estrategia de conflictos) y vuelve a `false` al terminar:
+son cambios persistentes y cualquier sesión MCP autenticada podría usarlos. Se
+ignora si `READ_ONLY=true`. Con `ENABLE_OB=true` siempre están `sync_status`,
+`sync_logs`, `ob_info` y `list_remote_vaults`; `ENABLE_OB_OPS=true` añade
+`sync_restart`. Login, logout, setup y unlink nunca se exponen.
 
 **Herramientas de alto impacto** (`ENABLE_DELETE`, `ENABLE_MOVE`,
 `ENABLE_FOLDER_RENAME`, `ENABLE_BULK_REPLACE`): desactivadas; cualquier cambio se
