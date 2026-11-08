@@ -451,9 +451,7 @@ step_service() {
 	install -m 0644 "$SCRIPT_DIR/obsidian-mcp.service" "/etc/systemd/system/${UNIT_NAME}"
 	systemctl daemon-reload
 	systemctl enable "$UNIT_NAME"
-	# RELLENAR is the placeholder used by env files created before it was
-	# renamed to FILL_ME_IN; keep matching it so older VMs stay protected.
-	if grep -qE 'FILL_ME_IN|RELLENAR' "$ENV_FILE"; then
+	if grep -q 'FILL_ME_IN' "$ENV_FILE"; then
 		warn "$ENV_FILE still contains FILL_ME_IN placeholders: service NOT started"
 		cat <<-EOF
 			    Next steps (see deploy/README.md):
