@@ -68,7 +68,8 @@ CADDY_KEY_FPR=65760C51EDEA2017CEA2CA15155B6D79CA56EA34
 NODESOURCE_KEY_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
 
 export DEBIAN_FRONTEND=noninteractive
-APT_OPTS=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+# Wait for the dpkg/apt lock (cloud-init and unattended-upgrades hold it on first boot).
+APT_OPTS=(-y -o DPkg::Lock::Timeout=900 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
 # uv: root-owned shared interpreter location (readable by `obsidian` with
 # ProtectHome=true), never fall back to a system Python.
@@ -136,7 +137,7 @@ step_packages() {
 	# iptables-persistent asks via debconf whether to save current rules.
 	echo 'iptables-persistent iptables-persistent/autosave_v4 boolean true' | debconf-set-selections
 	echo 'iptables-persistent iptables-persistent/autosave_v6 boolean true' | debconf-set-selections
-	apt-get update
+	apt-get -o DPkg::Lock::Timeout=900 update
 	if ((SKIP_UPGRADE)); then
 		info "skipping apt-get upgrade (--skip-upgrade)"
 	else
@@ -162,9 +163,12 @@ step_sshd() {
 	# With socket activation (Ubuntu 24.04) the privsep dir may not exist yet.
 	install -d -m 0755 /run/sshd
 	sshd -t || die "sshd config test failed; NOT reloading ssh (fix /etc/ssh/sshd_config.d/)"
-	sshd -T | grep -qx 'passwordauthentication no' \
+	# Capture first: `sshd -T | grep -q` would trip pipefail via SIGPIPE.
+	local effective
+	effective=$(sshd -T)
+	grep -qx 'passwordauthentication no' <<<"$effective" \
 		|| die "sshd -T still reports password authentication enabled"
-	sshd -T | grep -qx 'permitrootlogin no' || warn "sshd -T does not report PermitRootLogin no"
+	grep -qx 'permitrootlogin no' <<<"$effective" || warn "sshd -T does not report PermitRootLogin no"
 	systemctl try-reload-or-restart ssh.service
 	info "PasswordAuthentication no (verified with sshd -T)"
 }
@@ -290,7 +294,7 @@ step_repos() {
 	echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
 		>/etc/apt/sources.list.d/caddy-stable.list
 	chmod 0644 /etc/apt/sources.list.d/caddy-stable.list
-	apt-get update
+	apt-get -o DPkg::Lock::Timeout=900 update
 }
 
 step_node_ob() {
@@ -299,7 +303,7 @@ step_node_ob() {
 	local major
 	major=$(node -p 'process.versions.node.split(".")[0]')
 	[[ $major == "$NODE_MAJOR" ]] || die "node major is $major, expected $NODE_MAJOR (check apt pinning)"
-	if npm ls -g --depth=0 obsidian-headless 2>/dev/null | grep -q "obsidian-headless@${OB_VERSION}\$"; then
+	if grep -q "obsidian-headless@${OB_VERSION}\$" <<<"$(npm ls -g --depth=0 obsidian-headless 2>/dev/null || true)"; then
 		info "obsidian-headless@${OB_VERSION} already installed"
 	else
 		# better-sqlite3 is native; build-essential + python3 (installed above)
