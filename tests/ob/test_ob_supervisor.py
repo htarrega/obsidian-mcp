@@ -31,7 +31,7 @@ def test_launches_exact_command_and_captures_logs(fake_ob, ob_service, wait, mon
     wait(lambda: svc.supervisor.status()["last_fully_synced_at"] is not None)
     wait(lambda: any("Sync error" in line for line in svc.supervisor.logs(50)))
     assert _sync_calls(fake_ob) == [["sync", "--path", str(fake_ob.vault), "--continuous"]]
-    assert fake_ob.calls()[0]["cwd"] == str(fake_ob.vault)
+    assert fake_ob.calls()[0]["cwd"] == str(fake_ob.vault.parent)
     status = svc.supervisor.status()
     assert status["state"] == "running"
     assert status["pid"] is not None
@@ -137,3 +137,14 @@ def test_restart_replaces_child_and_never_runs_two(fake_ob, ob_service, wait):
     assert fake_ob.live_sync_pids() == [str(svc.supervisor.pid)]
     assert not _alive(old_pid)
     assert len(_sync_calls(fake_ob)) == 2
+
+
+def test_sync_child_does_not_inherit_server_secrets(fake_ob, ob_service, wait, monkeypatch):
+    monkeypatch.setenv("OAUTH_GITHUB_CLIENT_SECRET", "gh-client-secret-value")
+    monkeypatch.setenv("API_KEY", "server-api-key-value")
+    svc = ob_service()
+    wait(lambda: _sync_calls(fake_ob))
+    env = fake_ob.calls()[0]["env"]
+    assert "OAUTH_GITHUB_CLIENT_SECRET" not in env and "API_KEY" not in env
+    assert "PATH" in env
+    svc.supervisor.stop()

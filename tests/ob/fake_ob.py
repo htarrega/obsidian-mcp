@@ -6,7 +6,9 @@ process), ``<SUB>`` being the subcommand upper-cased with ``-`` → ``_``
 (``SYNC_STATUS``, ``SYNC_CONFIG``, ``VERSION``…):
 
 FAKE_OB_LOG            append one JSON line per invocation: argv, pid, cwd,
-                       and ``sync_running`` (a sync child was alive)
+                       env (the full environment the fake received) and
+                       ``sync_running`` (a sync child was alive)
+FAKE_OB_LOCAL_PATH     vault path reported by ``sync-list-local``
 FAKE_OB_STATE          JSON file holding the sync config (read by
                        sync-status, rewritten by sync-config)
 FAKE_OB_EXIT_<SUB>     exit code
@@ -61,6 +63,7 @@ if env.get("FAKE_OB_LOG"):
                     "argv": args,
                     "pid": os.getpid(),
                     "cwd": os.getcwd(),
+                    "env": dict(os.environ),
                     "sync_running": sync_running() if sub != "sync" else None,
                 }
             )
@@ -73,7 +76,7 @@ if env.get(f"FAKE_OB_SLEEP_{key}"):
 
 def load_state():
     path = env.get("FAKE_OB_STATE")
-    state = dict(DEFAULT_STATE, vaultPath=os.getcwd())
+    state = dict(DEFAULT_STATE, vaultPath=flag_value("--path") or os.getcwd())
     if path and os.path.exists(path):
         with open(path, encoding="utf-8") as handle:
             state.update(json.load(handle))

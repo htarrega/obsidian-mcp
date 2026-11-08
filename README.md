@@ -133,7 +133,12 @@ tool is registered and no process is started.
 
 - **Supervisor** (`src/obsidian_mcp/ob/supervisor.py`): on startup `main()`
   launches one child, `ob sync --path <OB_VAULT_PATH> --continuous`, with the
-  vault as working directory, no shell, in its own process group. A monitor
+  vault's parent directory as working directory (ob gets `--path`, so it
+  never relies on its cwd), no shell, in its own process group, and a minimal
+  environment: only `PATH`, `HOME`, `XDG_CONFIG_HOME`, `LANG`, `LC_ALL` and
+  `OBSIDIAN_AUTH_TOKEN` are passed, so server secrets such as
+  `OAUTH_GITHUB_CLIENT_SECRET` or `API_KEY` never reach ob or its npm
+  dependencies (one-shot commands get the same environment). A monitor
   thread captures stdout+stderr line by line into a ring buffer of
   `OB_LOG_LINES` lines (redacted before storage) and tracks pid, state
   (`starting`/`running`/`backoff`/`failed`/`stopped`), start time, restart

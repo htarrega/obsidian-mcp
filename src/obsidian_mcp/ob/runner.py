@@ -15,13 +15,29 @@ import os
 import signal
 import subprocess
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import IO, Any
 
 from .redact import redact, redact_obj
 from .settings import ObSettings
 
 MAX_OUTPUT_BYTES = 256 * 1024
+
+# The only environment variables an ``ob`` child inherits. Everything else
+# (OAUTH_GITHUB_CLIENT_SECRET, API_KEY, NODE_OPTIONS, ...) stays in the server.
+CHILD_ENV_VARS = (
+    "PATH",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "LANG",
+    "LC_ALL",
+    "OBSIDIAN_AUTH_TOKEN",
+)
+# Name prefixes passed through as well. Empty in production; the test suite
+# sets it so its fake ``ob`` can be configured through the environment.
+CHILD_ENV_PREFIXES: tuple[str, ...] = ()
 
 # subcommand -> {flag: takes_value}. ``--version`` is a bare top-level flag.
 _ALLOWED: dict[str, dict[str, bool]] = {
@@ -123,6 +139,24 @@ def _drain(stream: IO[bytes], sink: bytearray, state: dict[str, bool]) -> None:
     stream.close()
 
 
+def child_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The minimal environment for an ``ob`` child process."""
+    env = os.environ if environ is None else environ
+    return {
+        name: value
+        for name, value in env.items()
+        if name in CHILD_ENV_VARS
+        or (CHILD_ENV_PREFIXES and name.startswith(CHILD_ENV_PREFIXES))
+    }
+
+
+def child_cwd(vault_path: Path) -> Path:
+    """Working directory for ``ob`` children: the vault's parent (the service
+    home in the deployment), never the vault itself. Every vault-specific
+    command gets an explicit ``--path``, so ob never relies on its cwd."""
+    return vault_path.parent
+
+
 def signal_process_group(proc: subprocess.Popen, sig: int) -> None:
     """Signal the child's whole process group (it runs in its own session)."""
     try:
@@ -151,7 +185,8 @@ class ObRunner:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                cwd=str(self.settings.vault_path),
+                cwd=str(child_cwd(self.settings.vault_path)),
+                env=child_env(),
                 shell=False,
                 start_new_session=True,
             )

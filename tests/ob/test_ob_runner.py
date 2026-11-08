@@ -72,7 +72,7 @@ def test_runner_passes_exact_argv_without_shell(fake_ob, monkeypatch):
     assert result.returncode == 0
     assert seen["argv"] == [str(fake_ob.bin), "sync-status", "--path", str(fake_ob.vault), "--json"]
     assert seen["kwargs"]["shell"] is False
-    assert seen["kwargs"]["cwd"] == str(fake_ob.vault)
+    assert seen["kwargs"]["cwd"] == str(fake_ob.vault.parent)
     assert fake_ob.argvs() == [["sync-status", "--path", str(fake_ob.vault), "--json"]]
 
 
@@ -125,3 +125,44 @@ def test_runner_missing_binary(fake_ob, tmp_path):
     runner = ObRunner(fake_ob.settings(ob_bin=str(tmp_path / "nope")))
     with pytest.raises(ObCommandError, match="cannot execute"):
         runner.run(["--version"])
+
+
+_SERVER_SECRETS = {
+    "OAUTH_GITHUB_CLIENT_SECRET": "gh-client-secret-value",
+    "API_KEY": "server-api-key-value",
+    "NODE_OPTIONS": "--require /tmp/evil.js",
+}
+
+
+def test_child_env_is_minimal():
+    env = runner_mod.child_env(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/var/lib/obsidian",
+            "LANG": "C.UTF-8",
+            "OBSIDIAN_AUTH_TOKEN": "tok",
+            "FAKE_OB_X": "1",
+            **_SERVER_SECRETS,
+        }
+    )
+    assert env == {
+        "PATH": "/usr/bin",
+        "HOME": "/var/lib/obsidian",
+        "LANG": "C.UTF-8",
+        "OBSIDIAN_AUTH_TOKEN": "tok",
+    }
+
+
+def test_runner_child_does_not_inherit_server_secrets(fake_ob, monkeypatch):
+    for name, value in _SERVER_SECRETS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("OBSIDIAN_AUTH_TOKEN", "ob-token-value")
+    ObRunner(fake_ob.settings()).run(["--version"])
+    env = fake_ob.calls()[0]["env"]
+    for name in _SERVER_SECRETS:
+        assert name not in env
+    assert env["OBSIDIAN_AUTH_TOKEN"] == "ob-token-value"
+    assert env["XDG_CONFIG_HOME"] == os.environ["XDG_CONFIG_HOME"]
+    assert set(env) - set(runner_mod.CHILD_ENV_VARS) <= {
+        name for name in env if name.startswith("FAKE_OB_")
+    } | {"PWD", "LC_CTYPE"}

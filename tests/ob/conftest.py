@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from obsidian_mcp.ob import runner as runner_mod
 from obsidian_mcp.ob import service as service_mod
 from obsidian_mcp.ob.service import ObService
 from obsidian_mcp.ob.settings import ObSettings
@@ -97,6 +98,9 @@ def fake_ob(tmp_path: Path, monkeypatch) -> FakeOb:
         pids=root / "pids",
         root=root,
     )
+    # ob children get a minimal environment; let the fake's knobs through.
+    monkeypatch.setattr(runner_mod, "CHILD_ENV_PREFIXES", ("FAKE_OB_",))
+    monkeypatch.setenv("FAKE_OB_LOCAL_PATH", str(fake.vault))
     monkeypatch.setenv("FAKE_OB_LOG", str(fake.log))
     monkeypatch.setenv("FAKE_OB_STATE", str(fake.state))
     monkeypatch.setenv("FAKE_OB_SYNC_PIDS", str(fake.pids))

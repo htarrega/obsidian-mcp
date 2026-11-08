@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from .redact import redact
-from .runner import signal_process_group
+from .runner import child_cwd, child_env, signal_process_group
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +225,7 @@ class SyncSupervisor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(self.cwd),
+                env=child_env(),
                 shell=False,
                 start_new_session=True,
             )
@@ -313,5 +314,5 @@ def make_supervisor(settings: Any, **overrides: Any) -> SyncSupervisor:
         "backoff_max": settings.restart_backoff_max,
     }
     kwargs.update(overrides)
-    return SyncSupervisor(settings.sync_argv(), settings.vault_path, **kwargs)
+    return SyncSupervisor(settings.sync_argv(), child_cwd(settings.vault_path), **kwargs)
 
