@@ -371,7 +371,7 @@ step_env() {
 		sed "s/obsidian\\.mcp\\.htarrega\\.me/${DOMAIN}/g" "$SCRIPT_DIR/env.example" >"$tmp"
 		install -o root -g root -m 0600 "$tmp" "$ENV_FILE"
 		rm -f "$tmp"
-		info "created from env.example (fill in the RELLENAR values)"
+		info "created from env.example (fill in the FILL_ME_IN values)"
 	else
 		chown root:root "$ENV_FILE"
 		chmod 0600 "$ENV_FILE"
@@ -451,8 +451,10 @@ step_service() {
 	install -m 0644 "$SCRIPT_DIR/obsidian-mcp.service" "/etc/systemd/system/${UNIT_NAME}"
 	systemctl daemon-reload
 	systemctl enable "$UNIT_NAME"
-	if grep -q 'RELLENAR' "$ENV_FILE"; then
-		warn "$ENV_FILE still contains RELLENAR placeholders: service NOT started"
+	# RELLENAR is the placeholder used by env files created before it was
+	# renamed to FILL_ME_IN; keep matching it so older VMs stay protected.
+	if grep -qE 'FILL_ME_IN|RELLENAR' "$ENV_FILE"; then
+		warn "$ENV_FILE still contains FILL_ME_IN placeholders: service NOT started"
 		cat <<-EOF
 			    Next steps (see deploy/README.md):
 			      1. ob login / ob sync-setup / initial ob sync as user ${SVC_USER}
