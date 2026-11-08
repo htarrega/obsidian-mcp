@@ -1,261 +1,262 @@
-# Despliegue en Oracle Cloud (Always Free, Ampere A1)
+# Deploying to Oracle Cloud (Always Free, Ampere A1)
 
-Despliegue como código de **obsidian-mcp** en una VM Oracle Cloud Always Free
-(Ampere A1, Ubuntu 24.04 aarch64), con Obsidian Headless (`ob`) manteniendo el
-vault sincronizado vía Obsidian Sync y Caddy delante con TLS automático.
+Deployment-as-code for **obsidian-mcp** on an Oracle Cloud Always Free VM
+(Ampere A1, Ubuntu 24.04 aarch64), with Obsidian Headless (`ob`) keeping the
+vault in sync through Obsidian Sync and Caddy in front with automatic TLS.
 
-- URL pública: `https://obsidian.mcp.htarrega.me`
-- Conector MCP (claude.ai → Settings → Connectors): `https://obsidian.mcp.htarrega.me/mcp`
-- Callback OAuth de GitHub: `https://obsidian.mcp.htarrega.me/auth/callback`
-- Login de GitHub autorizado: `htarrega`
+- Public URL: `https://obsidian.mcp.htarrega.me`
+- MCP connector (claude.ai → Settings → Connectors): `https://obsidian.mcp.htarrega.me/mcp`
+- GitHub OAuth callback: `https://obsidian.mcp.htarrega.me/auth/callback`
+- Authorized GitHub login: `htarrega`
 
-El dominio es configurable (`DOMAIN` / `--domain`) en todos los scripts y plantillas.
+The domain is configurable (`DOMAIN` / `--domain`) in every script and template.
 
 > Diagramas de la arquitectura: [docs/arquitectura.md](../docs/arquitectura.md)
 
-## Arquitectura
+## Architecture
 
 ```
   claude.ai / Claude Code / Desktop
-              │  HTTPS 443 (TLS Let's Encrypt, DNS-only en Cloudflare)
+              │  HTTPS 443 (Let's Encrypt TLS, DNS-only on Cloudflare)
               ▼
- ┌──────────────────────── VM Oracle A1 (Ubuntu 24.04 arm64) ────────────────────────┐
- │  OCI Security List: 22, 80, 443   ─►  iptables INPUT (ACCEPT antes del REJECT)    │
+ ┌──────────────────────── Oracle A1 VM (Ubuntu 24.04 arm64) ────────────────────────┐
+ │  OCI Security List: 22, 80, 443   ─►  iptables INPUT (ACCEPT before the REJECT)    │
  │                                                                                    │
  │  caddy.service  :80/:443  ── reverse_proxy (flush_interval -1) ──►  127.0.0.1:8000 │
  │                                                                         │          │
- │  obsidian-mcp.service (User=obsidian, sandbox systemd)                  ▼          │
+ │  obsidian-mcp.service (User=obsidian, systemd sandbox)                  ▼          │
  │   └─ /opt/obsidian-mcp/app/.venv/bin/obsidian-remote-mcp   (TRANSPORT=http)        │
- │        ├─ OAuth GitHub (FASTMCP_HOME=/var/lib/obsidian/mcp-data)                    │
- │        ├─ índice + watcher (inotify) sobre /var/lib/obsidian/vault                  │
- │        └─ hijo supervisado: ob sync --continuous  (ENABLE_OB=true)                  │
- │                 └─ credenciales/logs: /var/lib/obsidian/.config/obsidian-headless   │
+ │        ├─ GitHub OAuth (FASTMCP_HOME=/var/lib/obsidian/mcp-data)                    │
+ │        ├─ index + watcher (inotify) on /var/lib/obsidian/vault                      │
+ │        └─ supervised child: ob sync --continuous  (ENABLE_OB=true)                  │
+ │                 └─ credentials/logs: /var/lib/obsidian/.config/obsidian-headless    │
  └──────────────────────────────────────────────────────────────────┬─────────────────┘
-                                                                    │ HTTPS saliente
+                                                                    │ outbound HTTPS
                                                                     ▼
-                                                     Obsidian Sync (E2E) ◄─► tus dispositivos
+                                                     Obsidian Sync (E2E) ◄─► your devices
 ```
 
-No hay unidad systemd separada para `ob`: el propio servidor MCP lanza y
-supervisa `ob sync --continuous` (con backoff hasta `OB_RESTART_BACKOFF_MAX`).
-`KillMode=mixed` hace que al parar el servicio el SIGTERM vaya al proceso
-Python (que cierra a `ob`), y lo que quede vivo tras 30 s recibe SIGKILL.
+There is no separate systemd unit for `ob`: the MCP server itself launches and
+supervises `ob sync --continuous` (with backoff up to `OB_RESTART_BACKOFF_MAX`).
+`KillMode=mixed` means that when the service stops, SIGTERM goes to the Python
+process (which shuts `ob` down), and anything still alive after 30 s gets SIGKILL.
 
-### Rutas en la VM
+### Paths on the VM
 
-| Ruta | Dueño / modo | Contenido |
+| Path | Owner / mode | Contents |
 |---|---|---|
-| `/opt/obsidian-mcp/app` | root, 0755 | `git clone` en un commit concreto (detached) + `.venv` |
-| `/opt/obsidian-mcp/python` | root, 0755 | CPython gestionado por uv (`UV_PYTHON_INSTALL_DIR`) |
-| `/opt/obsidian-mcp/DEPLOYED_COMMIT`, `PREVIOUS_COMMIT` | root | commit activo y anterior (rollback) |
-| `/etc/obsidian-mcp/env` | root:root 0600 (directorio root:root 0700) | configuración y secretos (`EnvironmentFile`) |
-| `/var/lib/obsidian` | obsidian 0750 | HOME del usuario `obsidian` (shell `nologin`) |
-| `/var/lib/obsidian/vault` | obsidian 0700 | el vault sincronizado |
-| `/var/lib/obsidian/mcp-data` | obsidian 0700 | `FASTMCP_HOME`: tokens OAuth, locks, audit log |
-| `/var/lib/obsidian/.config/obsidian-headless` | obsidian 0700 | credenciales de `ob`, `sync/<id>/sync.log` |
+| `/opt/obsidian-mcp/app` | root, 0755 | `git clone` at a specific commit (detached) + `.venv` |
+| `/opt/obsidian-mcp/python` | root, 0755 | CPython managed by uv (`UV_PYTHON_INSTALL_DIR`) |
+| `/opt/obsidian-mcp/DEPLOYED_COMMIT`, `PREVIOUS_COMMIT` | root | active and previous commit (rollback) |
+| `/etc/obsidian-mcp/env` | root:root 0600 (directory root:root 0700) | configuration and secrets (`EnvironmentFile`) |
+| `/var/lib/obsidian` | obsidian 0750 | HOME of the `obsidian` user (shell `nologin`) |
+| `/var/lib/obsidian/vault` | obsidian 0700 | the synced vault |
+| `/var/lib/obsidian/mcp-data` | obsidian 0700 | `FASTMCP_HOME`: OAuth tokens, locks, audit log |
+| `/var/lib/obsidian/.config/obsidian-headless` | obsidian 0700 | `ob` credentials, `sync/<id>/sync.log` |
 
-## Ficheros de este directorio
+## Files in this directory
 
-| Fichero | Destino en la VM |
+| File | Destination on the VM |
 |---|---|
-| `provision.sh` | se ejecuta una vez (idempotente, se puede repetir) |
-| `update.sh` | despliegue de otro commit / `rollback` |
+| `provision.sh` | run once (idempotent, safe to re-run) |
+| `update.sh` | deploy another commit / `rollback` |
 | `obsidian-mcp.service` | `/etc/systemd/system/obsidian-mcp.service` |
-| `env.example` | `/etc/obsidian-mcp/env` (solo si no existe) |
-| `Caddyfile.template` | `/etc/caddy/Caddyfile` (renderizado con `DOMAIN`) |
-| `sysctl-obsidian.conf` | `/etc/sysctl.d/60-obsidian.conf` (límites inotify) |
+| `env.example` | `/etc/obsidian-mcp/env` (only if it does not exist) |
+| `Caddyfile.template` | `/etc/caddy/Caddyfile` (rendered with `DOMAIN`) |
+| `sysctl-obsidian.conf` | `/etc/sysctl.d/60-obsidian.conf` (inotify limits) |
 | `sshd-hardening.conf` | `/etc/ssh/sshd_config.d/00-obsidian-hardening.conf` |
 | `logrotate-obsidian-headless` | `/etc/logrotate.d/obsidian-headless` |
 | `fail2ban-sshd.local` | `/etc/fail2ban/jail.d/obsidian-sshd.local` |
-| `fail2ban-caddy-oauth.conf` | `/etc/fail2ban/filter.d/obsidian-caddy-oauth.conf` (filtro sobre el access log JSON de Caddy) |
-| `fail2ban-caddy-oauth.local` | `/etc/fail2ban/jail.d/obsidian-caddy-oauth.local` (jails `obsidian-oauth-register` y `obsidian-oauth-authorize`) |
+| `fail2ban-caddy-oauth.conf` | `/etc/fail2ban/filter.d/obsidian-caddy-oauth.conf` (filter over Caddy's JSON access log) |
+| `fail2ban-caddy-oauth.local` | `/etc/fail2ban/jail.d/obsidian-caddy-oauth.local` (jails `obsidian-oauth-register` and `obsidian-oauth-authorize`) |
 | `oauth-store-usage.sh` | `/usr/local/sbin/obsidian-mcp-oauth-usage` |
-| `obsidian-mcp-oauth-usage.{service,timer}` | `/etc/systemd/system/` (aviso semanal si `FASTMCP_HOME` > 200 MB) |
+| `obsidian-mcp-oauth-usage.{service,timer}` | `/etc/systemd/system/` (weekly warning if `FASTMCP_HOME` > 200 MB) |
 
-## Recursos OCI
+## OCI resources
 
-La creación de la VM, VCN, subred, Security List (ingress TCP 22/80/443) e IP
-pública reservada se documenta en [`oci-resources.md`](oci-resources.md)
-*(pendiente: lo rellena otro paso)*.
+Creating the VM, VCN, subnet, Security List (ingress TCP 22/80/443) and
+reserved public IP is documented in [`oci-resources.md`](oci-resources.md)
+*(pending: filled in by another step)*.
 
-## Versiones fijadas
+## Pinned versions
 
-| Componente | Versión | Dónde se fija |
+| Component | Version | Where it is pinned |
 |---|---|---|
 | obsidian-headless (`ob`) | `0.0.14` | `OB_VERSION` / `--ob-version` |
 | Node.js | 22.x LTS (NodeSource, arm64) | `NODE_MAJOR` / `--node-major` |
 | uv | `0.11.7` | `UV_VERSION` / `--uv-version` |
-| Python | 3.12 (último patch gestionado por uv; admite `3.12.x` exacto) | `PYTHON_VERSION` |
-| Dependencias Python | las de `uv.lock` (`uv sync --locked`) | commit desplegado |
-| obsidian-mcp | commit SHA de 40 hex (nunca rama/tag) | `COMMIT` / `--commit` |
-| Caddy | `2.11.9` (apt, repo Cloudsmith `caddy/stable`; `latest` = sin fijar) | `CADDY_VERSION` / `--caddy-version` |
-| Claves APT | huellas fijadas en `provision.sh` (`CADDY_KEY_FPR`, `NODESOURCE_KEY_FPR`); se aborta si la clave descargada no coincide | `provision.sh` |
+| Python | 3.12 (latest patch managed by uv; an exact `3.12.x` is accepted) | `PYTHON_VERSION` |
+| Python dependencies | those in `uv.lock` (`uv sync --locked`) | deployed commit |
+| obsidian-mcp | 40-hex commit SHA (never a branch/tag) | `COMMIT` / `--commit` |
+| Caddy | `2.11.9` (apt, Cloudsmith repo `caddy/stable`; `latest` = unpinned) | `CADDY_VERSION` / `--caddy-version` |
+| APT keys | fingerprints pinned in `provision.sh` (`CADDY_KEY_FPR`, `NODESOURCE_KEY_FPR`); aborts if the downloaded key does not match | `provision.sh` |
 
-## Requisitos previos
+## Prerequisites
 
-1. VM Ampere A1 con Ubuntu 24.04 creada, IP pública y Security List con ingress
-   TCP 22, 80 y 443 (ver `oci-resources.md`).
-2. DNS en Cloudflare: registro **A** `obsidian.mcp` → IP pública, **DNS only**
-   (nube gris). Con proxy naranja Caddy no puede emitir el certificado como está
-   configurado y el streaming se comporta distinto.
-3. Alias SSH en tu máquina (`~/.ssh/config`):
+1. An Ampere A1 VM running Ubuntu 24.04, with a public IP and a Security List
+   allowing ingress on TCP 22, 80 and 443 (see `oci-resources.md`).
+2. DNS on Cloudflare: **A** record `obsidian.mcp` → public IP, **DNS only**
+   (grey cloud). With the orange-cloud proxy, Caddy cannot issue the certificate
+   as configured and streaming behaves differently.
+3. An SSH alias on your machine (`~/.ssh/config`):
 
    ```
    Host obsidian-vps
-       HostName <IP pública>
+       HostName <public IP>
        User ubuntu
-       IdentityFile ~/.ssh/<tu_clave>
+       IdentityFile ~/.ssh/<your_key>
    ```
 
-   Comprueba que entras con clave **antes** de provisionar: el script desactiva
-   `PasswordAuthentication` y `PermitRootLogin`.
-4. Una OAuth App de GitHub (GitHub → Settings → Developer settings → OAuth Apps):
+   Check that key-based login works **before** provisioning: the script disables
+   `PasswordAuthentication` and `PermitRootLogin`.
+4. A GitHub OAuth App (GitHub → Settings → Developer settings → OAuth Apps):
    - Homepage URL: `https://obsidian.mcp.htarrega.me`
    - Authorization callback URL: `https://obsidian.mcp.htarrega.me/auth/callback`
-5. Cuenta de Obsidian con Sync y la contraseña de cifrado E2E del vault remoto.
-6. El SHA del commit a desplegar (que esté pusheado a `htarrega/obsidian-mcp`):
+5. An Obsidian account with Sync, and the E2E encryption password of the remote vault.
+6. The SHA of the commit to deploy (it must be pushed to `htarrega/obsidian-mcp`):
    `git rev-parse HEAD`.
 
-## Despliegue paso a paso
+## Step-by-step deployment
 
-### 1. Copiar `deploy/` a la VM
+### 1. Copy `deploy/` to the VM
 
 ```bash
 scp -r deploy obsidian-vps:~/deploy
-# o en la VM: git clone https://github.com/htarrega/obsidian-mcp ~/src && cp -r ~/src/deploy ~/deploy
+# or on the VM: git clone https://github.com/htarrega/obsidian-mcp ~/src && cp -r ~/src/deploy ~/deploy
 ```
 
-### 2. Provisionar
+### 2. Provision
 
 ```bash
-COMMIT=$(git rev-parse HEAD)   # en tu máquina, en el repo
+COMMIT=$(git rev-parse HEAD)   # on your machine, inside the repo
 ssh -t obsidian-vps "sudo ~/deploy/provision.sh --commit $COMMIT"
-# opciones: --domain, --acme-email tu@correo, --skip-upgrade, --no-start, --ssh-ports 22
+# options: --domain, --acme-email you@example.com, --skip-upgrade, --no-start, --ssh-ports 22
 ```
 
-Usa los flags en vez de `sudo COMMIT=... ./provision.sh`: `sudo` filtra el
-entorno y solo deja pasar variables en la línea de órdenes si la regla de
-sudoers es `ALL` o tiene `SETENV` (en Oracle sí lo es, pero los flags no
-dependen de ello).
+Use the flags instead of `sudo COMMIT=... ./provision.sh`: `sudo` filters the
+environment and only passes variables given on the command line if the sudoers
+rule is `ALL` or has `SETENV` (it is on Oracle, but the flags do not depend
+on it).
 
-Qué hace (idempotente): `apt upgrade`; paquetes base; unattended-upgrades;
-`sshd` sin contraseñas (verificado con `sshd -T`); reglas iptables 80/443 (y
-puertos SSH) insertadas **antes** del `REJECT` de Oracle y guardadas con
-`netfilter-persistent`; límites inotify; usuario `obsidian` y directorios; Node
-22 + `obsidian-headless@0.0.14`; uv + CPython en `/opt/obsidian-mcp/python`;
-clon del repo en el commit pedido + `uv sync --locked --no-dev`;
-`/etc/obsidian-mcp/env` desde `env.example` (solo si no existe); unidad systemd
-habilitada; Caddy desde el repo oficial (Cloudsmith) con `caddy validate`;
-logrotate de `sync.log`; jails de fail2ban `sshd` y de los endpoints OAuth
-sin autenticar (`POST /register`, `GET /authorize`, leídos del access log JSON
-de Caddy); timer semanal que avisa en el journal si `FASTMCP_HOME` supera
-200 MB (no borra nada). Al final imprime un resumen
-con versiones y commit.
+What it does (idempotent): `apt upgrade`; base packages; unattended-upgrades;
+password-less `sshd` (verified with `sshd -T`); iptables rules for 80/443 (and
+the SSH ports) inserted **before** Oracle's `REJECT` and saved with
+`netfilter-persistent`; inotify limits; the `obsidian` user and directories; Node
+22 + `obsidian-headless@0.0.14`; uv + CPython in `/opt/obsidian-mcp/python`;
+repo clone at the requested commit + `uv sync --locked --no-dev`;
+`/etc/obsidian-mcp/env` from `env.example` (only if it does not exist); systemd
+unit enabled; Caddy from the official repo (Cloudsmith) with `caddy validate`;
+logrotate for `sync.log`; fail2ban jails for `sshd` and for the unauthenticated
+OAuth endpoints (`POST /register`, `GET /authorize`, read from Caddy's JSON
+access log); a weekly timer that warns in the journal if `FASTMCP_HOME` exceeds
+200 MB (it never deletes anything). At the end it prints a summary with
+versions and commit.
 
-La primera vez el servicio **no arranca**: el env todavía tiene `RELLENAR`.
+The first time, the service **does not start**: the env file still contains
+`FILL_ME_IN`.
 
-### 3. Obsidian Headless: login, vault y primera sincronización
+### 3. Obsidian Headless: login, vault and first sync
 
-Todos los comandos se ejecutan como el usuario `obsidian` con el mismo `HOME` y
-`XDG_CONFIG_HOME` que usa la unidad systemd, para que las credenciales queden en
+Every command runs as the `obsidian` user with the same `HOME` and
+`XDG_CONFIG_HOME` the systemd unit uses, so the credentials end up in
 `/var/lib/obsidian/.config/obsidian-headless`.
 
-> **¿Hace falta `-s /bin/bash` por ser `nologin`?** No. `sudo -u obsidian cmd`
-> ejecuta `cmd` directamente (execve), sin pasar por la shell de login del
-> usuario; la shell solo importa con `sudo -i`, `sudo -s` o `su -`. `-H` y el
-> `env HOME=... XDG_CONFIG_HOME=...` explícito evitan depender de la política de
-> entorno de sudo (que descartaría `XDG_CONFIG_HOME`).
+> **Is `-s /bin/bash` needed because the shell is `nologin`?** No.
+> `sudo -u obsidian cmd` runs `cmd` directly (execve), without going through the
+> user's login shell; the shell only matters with `sudo -i`, `sudo -s` or `su -`.
+> `-H` and the explicit `env HOME=... XDG_CONFIG_HOME=...` avoid depending on
+> sudo's environment policy (which would drop `XDG_CONFIG_HOME`).
 
-Login (pide email, contraseña y 2FA de Obsidian):
+Log in (asks for your Obsidian email, password and 2FA code):
 
 ```bash
 ssh -t obsidian-vps 'sudo -u obsidian -H env HOME=/var/lib/obsidian XDG_CONFIG_HOME=/var/lib/obsidian/.config ob login'
 ```
 
-Listar los vaults remotos:
+List the remote vaults:
 
 ```bash
 ssh -t obsidian-vps 'sudo -u obsidian -H env HOME=/var/lib/obsidian XDG_CONFIG_HOME=/var/lib/obsidian/.config ob sync-list-remote'
 ```
 
-Vincular el vault remoto con el directorio local (pide la contraseña E2E):
+Link the remote vault to the local directory (asks for the E2E password):
 
 ```bash
-ssh -t obsidian-vps 'sudo -u obsidian -H env -C /var/lib/obsidian/vault HOME=/var/lib/obsidian XDG_CONFIG_HOME=/var/lib/obsidian/.config ob sync-setup --vault "<NOMBRE>" --path /var/lib/obsidian/vault --device-name oracle-vps'
+ssh -t obsidian-vps 'sudo -u obsidian -H env -C /var/lib/obsidian/vault HOME=/var/lib/obsidian XDG_CONFIG_HOME=/var/lib/obsidian/.config ob sync-setup --vault "<NAME>" --path /var/lib/obsidian/vault --device-name oracle-vps'
 ```
 
-> Nota: en lugar de `cd /var/lib/obsidian/vault && sudo -u obsidian ...` se usa
-> `env -C` (coreutils ≥ 8.28) porque el vault es `0700` del usuario `obsidian`
-> y el usuario `ubuntu` no puede hacer `cd` dentro; `env -C` cambia de
-> directorio ya como `obsidian`.
+> Note: `env -C` (coreutils ≥ 8.28) is used instead of
+> `cd /var/lib/obsidian/vault && sudo -u obsidian ...` because the vault is
+> `0700` and owned by `obsidian`, so the `ubuntu` user cannot `cd` into it;
+> `env -C` changes directory while already running as `obsidian`.
 
-Primera sincronización completa, en primer plano (con el servicio parado para
-que no haya dos `ob` a la vez sobre el mismo vault):
+First full sync, in the foreground (with the service stopped so that two `ob`
+processes never run on the same vault at once):
 
 ```bash
 ssh -t obsidian-vps 'sudo systemctl stop obsidian-mcp; sudo -u obsidian -H env HOME=/var/lib/obsidian XDG_CONFIG_HOME=/var/lib/obsidian/.config ob sync --path /var/lib/obsidian/vault'
 ssh obsidian-vps "sudo find /var/lib/obsidian/vault -name '*.md' | wc -l"
 ```
 
-El número de notas debe coincidir (aprox.) con el de tu vault en el escritorio.
+The number of notes should (roughly) match your desktop vault.
 
-### 4. Secretos
+### 4. Secrets
 
 ```bash
 ssh -t obsidian-vps sudoedit /etc/obsidian-mcp/env
 ```
 
-Rellena `OAUTH_GITHUB_CLIENT_ID` y `OAUTH_GITHUB_CLIENT_SECRET` (sustituyendo
-`RELLENAR`); revisa `PUBLIC_BASE_URL`, `OAUTH_GITHUB_ALLOWED_LOGINS` y la
-política de escritura. El fichero no se versiona ni lo sobrescribe
-`provision.sh`.
+Fill in `OAUTH_GITHUB_CLIENT_ID` and `OAUTH_GITHUB_CLIENT_SECRET` (replacing
+`FILL_ME_IN`); review `PUBLIC_BASE_URL`, `OAUTH_GITHUB_ALLOWED_LOGINS` and the
+write policy. The file is not version-controlled and `provision.sh` never
+overwrites it.
 
-### 5. Arrancar y mirar logs
+### 5. Start and watch the logs
 
 ```bash
 ssh obsidian-vps 'sudo systemctl start obsidian-mcp && systemctl status obsidian-mcp --no-pager'
-ssh obsidian-vps 'journalctl -u obsidian-mcp -f'           # Ctrl-C para salir
-ssh obsidian-vps 'journalctl -u caddy -n 100 --no-pager'   # emisión del certificado
+ssh obsidian-vps 'journalctl -u obsidian-mcp -f'           # Ctrl-C to exit
+ssh obsidian-vps 'journalctl -u caddy -n 100 --no-pager'   # certificate issuance
 ```
 
-(Volver a ejecutar `provision.sh` con el env ya completo también arranca/reinicia
-el servicio y espera a `/health`.)
+(Re-running `provision.sh` once the env file is complete also starts/restarts
+the service and waits for `/health`.)
 
-### 6. Conectar claude.ai
+### 6. Connect claude.ai
 
 Settings → Connectors → Add custom connector → URL
-`https://obsidian.mcp.htarrega.me/mcp` → login con GitHub (`htarrega`).
+`https://obsidian.mcp.htarrega.me/mcp` → log in with GitHub (`htarrega`).
 
-## Verificación
+## Verification
 
-Desde tu máquina:
+From your machine:
 
 ```bash
 D=obsidian.mcp.htarrega.me
 curl -fsS https://$D/health                                   # {"status":"ok",...}
-curl -fsS https://$D/.well-known/oauth-protected-resource/mcp  # metadata del recurso
-curl -fsS https://$D/.well-known/oauth-authorization-server    # metadata del AS (issuer = https://$D)
+curl -fsS https://$D/.well-known/oauth-protected-resource/mcp  # resource metadata
+curl -fsS https://$D/.well-known/oauth-authorization-server    # AS metadata (issuer = https://$D)
 curl -si -X POST https://$D/mcp -H 'content-type: application/json' -d '{}' | head -n 15
 #   -> HTTP/2 401 + WWW-Authenticate: Bearer ... resource_metadata=...
 curl -sI https://$D/health | grep -iE '^(server|strict-transport|x-content-type|referrer)'
-#   -> sin cabecera Server; HSTS, nosniff y no-referrer presentes
-nmap -Pn -p 1-65535 --open $D        # solo 22, 80, 443 (o: nc -zv $D 8000 debe fallar)
+#   -> no Server header; HSTS, nosniff and no-referrer present
+nmap -Pn -p 1-65535 --open $D        # only 22, 80, 443 (or: nc -zv $D 8000 must fail)
 ```
 
-En la VM:
+On the VM:
 
 ```bash
-sudo ss -tlnp            # 8000 (python) y 2019 (caddy admin) SOLO en 127.0.0.1; 80/443 caddy; 22 sshd
-sudo iptables -L INPUT -n --line-numbers   # ACCEPT 80/443 por encima del REJECT
+sudo ss -tlnp            # 8000 (python) and 2019 (caddy admin) ONLY on 127.0.0.1; 80/443 caddy; 22 sshd
+sudo iptables -L INPUT -n --line-numbers   # ACCEPT 80/443 above the REJECT
 sudo sshd -T | grep -E 'passwordauthentication|permitrootlogin'
 sudo fail2ban-client status sshd
-sudo fail2ban-client status obsidian-oauth-register    # >20 POST /register en 10 min -> ban 1 h
-sudo fail2ban-client status obsidian-oauth-authorize   # >60 GET /authorize en 10 min -> ban 1 h
+sudo fail2ban-client status obsidian-oauth-register    # >20 POST /register in 10 min -> 1 h ban
+sudo fail2ban-client status obsidian-oauth-authorize   # >60 GET /authorize in 10 min -> 1 h ban
 sudo fail2ban-regex /var/log/caddy/obsidian-mcp-access.log \
   '/etc/fail2ban/filter.d/obsidian-caddy-oauth.conf[oauth_method=POST, oauth_path=/register]'
 systemctl list-timers obsidian-mcp-oauth-usage.timer
-journalctl -u obsidian-mcp-oauth-usage -n 5     # tamaño de FASTMCP_HOME (solo avisa, nunca borra)
-systemd-analyze security obsidian-mcp      # exposición ~2.9 "OK"
+journalctl -u obsidian-mcp-oauth-usage -n 5     # FASTMCP_HOME size (warns only, never deletes)
+systemd-analyze security obsidian-mcp      # exposure ~2.9 "OK"
 sysctl fs.inotify.max_user_watches fs.inotify.max_user_instances
 pgrep -u obsidian -a                         # python + node (ob sync --continuous)
 sudo logrotate -d /etc/logrotate.d/obsidian-headless
@@ -263,99 +264,103 @@ sudo logrotate -d /etc/logrotate.d/obsidian-headless
 
 Checklist:
 
-- [ ] `/health` 200 por HTTPS con certificado válido.
-- [ ] `/mcp` sin token → 401 con `WWW-Authenticate`.
-- [ ] Puerto 8000 no accesible desde fuera.
-- [ ] Login en claude.ai con `htarrega` funciona; otra cuenta de GitHub es rechazada.
-- [ ] Crear una nota desde Claude → aparece en el escritorio vía Sync (y viceversa).
-- [ ] `systemctl restart obsidian-mcp` no deja procesos `ob` huérfanos (`pgrep -u obsidian -a`).
+- [ ] `/health` returns 200 over HTTPS with a valid certificate.
+- [ ] `/mcp` without a token → 401 with `WWW-Authenticate`.
+- [ ] Port 8000 is not reachable from outside.
+- [ ] Logging in from claude.ai as `htarrega` works; any other GitHub account is rejected.
+- [ ] Creating a note from Claude → it shows up on the desktop via Sync (and vice versa).
+- [ ] `systemctl restart obsidian-mcp` leaves no orphaned `ob` processes (`pgrep -u obsidian -a`).
 
-## Actualizar y hacer rollback
+## Updating and rolling back
 
 ```bash
-# en tu máquina, tras pushear:
+# on your machine, after pushing:
 NEW=$(git rev-parse HEAD)
 ssh -t obsidian-vps "sudo ~/deploy/update.sh $NEW"   # fetch, checkout --detach, uv sync --locked, restart, /health
-ssh -t obsidian-vps 'sudo ~/deploy/update.sh rollback' # vuelve a /opt/obsidian-mcp/PREVIOUS_COMMIT
+ssh -t obsidian-vps 'sudo ~/deploy/update.sh rollback' # back to /opt/obsidian-mcp/PREVIOUS_COMMIT
 ssh obsidian-vps 'cat /opt/obsidian-mcp/DEPLOYED_COMMIT /opt/obsidian-mcp/PREVIOUS_COMMIT'
 ```
 
-`update.sh` solo cambia la aplicación. Si cambian la unidad, el Caddyfile,
-`ob` o versiones de Node/uv: copia el `deploy/` nuevo y vuelve a lanzar
-`provision.sh --commit <sha> --skip-upgrade` (no toca `/etc/obsidian-mcp/env`).
-Si `uv sync` falla, `update.sh` restaura el commit anterior antes de salir.
+`update.sh` only changes the application. If the unit, the Caddyfile, `ob` or
+the Node/uv versions change: copy the new `deploy/` over and re-run
+`provision.sh --commit <sha> --skip-upgrade` (it does not touch
+`/etc/obsidian-mcp/env`). If `uv sync` fails, `update.sh` restores the previous
+commit before exiting.
 
-Cambiar `ob`: `--ob-version x.y.z` en `provision.sh` y reiniciar el servicio.
+Changing `ob`: pass `--ob-version x.y.z` to `provision.sh` and restart the service.
 
-## Ajustes de política
+## Policy settings
 
-**Restringir la escritura a una carpeta** (`WRITE_PATHS`): vacío = todo el vault
-menos `DENY_WRITE_PATHS`. Con barra final la regla incluye la carpeta y todo lo
-que cuelga; sin barra, solo esa ruta exacta. Varias reglas separadas por comas:
+**Restrict writes to a folder** (`WRITE_PATHS`): empty = the whole vault
+except `DENY_WRITE_PATHS`. With a trailing slash the rule covers the folder and
+everything below it; without one, only that exact path. Separate multiple rules
+with commas:
 
 ```bash
 ssh -t obsidian-vps sudoedit /etc/obsidian-mcp/env   # WRITE_PATHS=Inbox/,AI-Output/
 ssh obsidian-vps 'sudo systemctl restart obsidian-mcp'
 ```
 
-`DENY_WRITE_PATHS` **reemplaza** la lista por defecto (no la amplía): mantén
-`.obsidian/` (config de Obsidian y `.obsidian/.sync.lock` de `ob`), `.trash/`
-y `_AI_INSTRUCTIONS.md` además de lo que añadas.
+`DENY_WRITE_PATHS` **replaces** the default list (it does not extend it): keep
+`.obsidian/` (Obsidian config and `ob`'s `.obsidian/.sync.lock`), `.trash/`
+and `_AI_INSTRUCTIONS.md` in addition to whatever you add.
 
-**Solo lectura temporal**: `READ_ONLY=true` y reiniciar.
+**Temporary read-only mode**: `READ_ONLY=true` and restart.
 
-**`ENABLE_OB_ADMIN`**: déjalo en `false`. Actívalo solo de forma puntual para
-cambiar la configuración de sync sin SSH (carpetas excluidas, tipos de fichero,
-categorías de config, estrategia de conflictos) y vuelve a `false` al terminar:
-son cambios persistentes y cualquier sesión MCP autenticada podría usarlos. Se
-ignora si `READ_ONLY=true`. Con `ENABLE_OB=true` siempre están `sync_status`,
-`sync_logs`, `ob_info` y `list_remote_vaults`; `ENABLE_OB_OPS=true` añade
-`sync_restart`. Login, logout, setup y unlink nunca se exponen.
+**`ENABLE_OB_ADMIN`**: leave it `false`. Enable it only temporarily to change
+the sync configuration without SSH (excluded folders, file types, config
+categories, conflict strategy) and set it back to `false` when done: these are
+persistent changes and any authenticated MCP session could make them. It is
+ignored when `READ_ONLY=true`. With `ENABLE_OB=true`, `sync_status`,
+`sync_logs`, `ob_info` and `list_remote_vaults` are always available;
+`ENABLE_OB_OPS=true` adds `sync_restart`. Login, logout, setup and unlink are
+never exposed.
 
-**Herramientas de alto impacto** (`ENABLE_DELETE`, `ENABLE_MOVE`,
-`ENABLE_FOLDER_RENAME`, `ENABLE_BULK_REPLACE`): desactivadas; cualquier cambio se
-propaga a todos tus dispositivos por Sync. Si activas alguna, ten copia/historial
-de versiones de Obsidian Sync a mano.
+**High-impact tools** (`ENABLE_DELETE`, `ENABLE_MOVE`,
+`ENABLE_FOLDER_RENAME`, `ENABLE_BULK_REPLACE`): disabled; any change propagates
+to all your devices through Sync. If you enable any of them, keep a backup or
+Obsidian Sync version history at hand.
 
-## Oracle Always Free: avisos
+## Oracle Always Free: caveats
 
-- **Reclamación por inactividad**: Oracle puede detener (y reclamar) instancias
-  Always Free consideradas *idle* si durante 7 días el percentil 95 de CPU queda
-  por debajo del 20 % (y la red y, en A1, la memoria también < 20 %). Un servidor
-  MCP personal está casi siempre ocioso, así que es un riesgo real.
-- **Pay-As-You-Go**: pasar la cuenta a PAYG (con tarjeta) elimina esa
-  reclamación de instancias idle y mantiene gratis lo que esté dentro de los
-  límites Always Free (A1: 4 OCPU / 24 GB en total). Pon una alerta de
-  presupuesto (p. ej. 1 €) para detectar cualquier recurso de pago por error.
-- Haz copia de `/etc/obsidian-mcp/env` y, si quieres conservar las sesiones
-  OAuth, de `/var/lib/obsidian/mcp-data`. El vault se recupera de Obsidian Sync.
+- **Idle reclamation**: Oracle may stop (and reclaim) Always Free instances
+  considered *idle* if, over 7 days, the 95th percentile of CPU usage stays
+  below 20 % (and network and, on A1, memory are also < 20 %). A personal MCP
+  server is idle almost all the time, so this is a real risk.
+- **Pay-As-You-Go**: upgrading the account to PAYG (with a card) removes the
+  idle-instance reclamation and keeps everything within the Always Free limits
+  free (A1: 4 OCPU / 24 GB in total). Set a budget alert (e.g. €1) to catch any
+  paid resource created by mistake.
+- Back up `/etc/obsidian-mcp/env` and, if you want to keep the OAuth sessions,
+  `/var/lib/obsidian/mcp-data`. The vault can be recovered from Obsidian Sync.
 
-## Pendiente (endurecimiento de la cadena de suministro)
+## Pending (supply-chain hardening)
 
-- **Huella de la clave de NodeSource**: NodeSource no la publica en su
-  documentación. `NODESOURCE_KEY_FPR` es la de la clave servida por
-  `deb.nodesource.com`, que coincide con la de `keyserver.ubuntu.com`
-  (2026-11-08). Confirmarla contra una fuente oficial si aparece. La de Caddy
-  está contrastada con la API de Cloudsmith.
-- **obsidian-headless (npm)**: `npm install -g obsidian-headless@x.y.z` fija la
-  versión pero no la integridad del tarball ni de sus dependencias
-  transitivas. Pendiente: instalar desde un `package-lock.json` versionado
-  aquí (`npm ci` en un prefijo propio) o comprobar `dist.integrity` (sha512) del
-  tarball antes de instalarlo.
-- **uv**: el instalador `https://astral.sh/uv/<versión>/install.sh` se ejecuta
-  sin comprobar checksum. Pendiente: descargar el binario
-  `uv-aarch64-unknown-linux-gnu.tar.gz` de la release de GitHub y verificar su
-  `.sha256` (o fijar el sha256 en `provision.sh`) antes de instalarlo.
+- **NodeSource key fingerprint**: NodeSource does not publish it in its
+  documentation. `NODESOURCE_KEY_FPR` is the fingerprint of the key served by
+  `deb.nodesource.com`, which matches the one on `keyserver.ubuntu.com`
+  (2026-11-08). Confirm it against an official source if one appears. The Caddy
+  fingerprint has been checked against the Cloudsmith API.
+- **obsidian-headless (npm)**: `npm install -g obsidian-headless@x.y.z` pins the
+  version but not the integrity of the tarball or its transitive dependencies.
+  Pending: install from a `package-lock.json` versioned here (`npm ci` into a
+  dedicated prefix) or check the tarball's `dist.integrity` (sha512) before
+  installing it.
+- **uv**: the installer `https://astral.sh/uv/<version>/install.sh` runs
+  without a checksum check. Pending: download the
+  `uv-aarch64-unknown-linux-gnu.tar.gz` binary from the GitHub release and
+  verify its `.sha256` (or pin the sha256 in `provision.sh`) before installing it.
 
-## Problemas habituales
+## Troubleshooting
 
-- **Caddy no obtiene certificado**: DNS no es *DNS only*, o faltan 80/443 en la
-  Security List o en iptables (`sudo iptables -L INPUT -n --line-numbers`).
-- **`ob` falla con ENOSPC / no detecta cambios**: límites inotify (`sysctl
+- **Caddy cannot obtain a certificate**: DNS is not *DNS only*, or 80/443 are
+  missing from the Security List or iptables (`sudo iptables -L INPUT -n --line-numbers`).
+- **`ob` fails with ENOSPC / does not detect changes**: inotify limits (`sysctl
   fs.inotify.max_user_watches`).
-- **`npm install -g obsidian-headless` falla compilando `better-sqlite3`**:
-  faltan `build-essential`/`python3` (los instala `provision.sh`); revisa la
-  salida de node-gyp.
-- **`ob` no está en `/usr/bin/ob`**: `provision.sh` avisa; ajusta `OB_BIN` en el env.
-- **El servicio se reinicia en bucle**: `journalctl -u obsidian-mcp -n 200`;
-  típicamente `ConfigError` (variable mal escrita) o el vault sin configurar en `ob`.
+- **`npm install -g obsidian-headless` fails compiling `better-sqlite3`**:
+  `build-essential`/`python3` are missing (`provision.sh` installs them); check
+  the node-gyp output.
+- **`ob` is not at `/usr/bin/ob`**: `provision.sh` warns about it; set `OB_BIN`
+  in the env file.
+- **The service restarts in a loop**: `journalctl -u obsidian-mcp -n 200`;
+  usually a `ConfigError` (misspelled variable) or the vault not configured in `ob`.
