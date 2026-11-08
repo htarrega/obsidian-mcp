@@ -538,9 +538,13 @@ class _APIKeyAuthProvider(TokenVerifier):
 class _RestrictedGitHubVerifier(TokenVerifier):
     """Wraps GitHubProvider's token validator to reject logins not on an allowlist.
 
-    Runs once per GitHub token exchange (not per request) — GitHubProvider
-    itself has no concept of restricting which GitHub account may authenticate,
-    so any account could otherwise get full vault access.
+    Runs on every authenticated request: OAuthProxy.load_access_token()
+    swaps the FastMCP JWT for the upstream GitHub token and re-validates it
+    through this verifier each time (the wrapped GitHubTokenVerifier caches
+    GitHub's answer for cache_ttl_seconds=300, so the allowlist check itself
+    is cheap). GitHubProvider has no concept of restricting which GitHub
+    account may authenticate, so any account could otherwise get full vault
+    access.
     """
 
     def __init__(self, base: TokenVerifier, allowed_logins: list[str]) -> None:
@@ -624,9 +628,9 @@ def _build_auth() -> AuthProvider | None:
             fastmcp_access_token_expiry_seconds=hardening.access_token_expiry_seconds,
             require_authorization_consent=True,
         )
-        # Relies on OAuthProxy's private _token_validator attribute — the only
-        # hook that runs at token-exchange time, before an allowlist check
-        # could otherwise happen. May break on a fastmcp upgrade; if it does,
+        # Relies on OAuthProxy's private _token_validator attribute — the hook
+        # load_access_token() uses to validate the upstream token on every
+        # request. May break on a fastmcp upgrade; if it does,
         # this will raise AttributeError loudly at startup rather than
         # silently allowing any GitHub account through.
         github_provider._token_validator = _RestrictedGitHubVerifier(

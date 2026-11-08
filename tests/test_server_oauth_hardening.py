@@ -140,3 +140,36 @@ def test_default_redirect_allowlist_matching(oauth_env, uri, allowed):
     """Wildcard ports match any loopback port via fastmcp's own matcher."""
     patterns = list(oauth_hardening_from_env().allowed_client_redirect_uris)
     assert validate_redirect_uri(uri, patterns) is allowed
+
+
+# ── login allowlist verifier ─────────────────────────────────────────────────
+
+class _CountingVerifier(server.TokenVerifier):
+    def __init__(self, login: str) -> None:
+        super().__init__()
+        self.login = login
+        self.calls = 0
+
+    async def verify_token(self, token):
+        self.calls += 1
+        return server.AccessToken(
+            token=token, client_id="1", scopes=["read:user"], claims={"login": self.login}
+        )
+
+
+def test_provider_validator_is_login_allowlist(oauth_env):
+    provider = server._build_auth()
+    assert isinstance(provider._token_validator, server._RestrictedGitHubVerifier)
+
+
+@pytest.mark.asyncio
+async def test_allowlist_is_enforced_on_every_verification():
+    """The allowlist wrapper is what load_access_token() calls per request,
+    so it must re-check the login every time, not just once."""
+    base = _CountingVerifier("octocat")
+    verifier = server._RestrictedGitHubVerifier(base, ["octocat"])
+
+    assert await verifier.verify_token("t") is not None
+    base.login = "mallory"
+    assert await verifier.verify_token("t") is None
+    assert base.calls == 2
