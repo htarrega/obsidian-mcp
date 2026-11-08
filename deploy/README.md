@@ -11,7 +11,7 @@ vault in sync through Obsidian Sync and Caddy in front with automatic TLS.
 
 The domain is configurable (`DOMAIN` / `--domain`) in every script and template.
 
-> Diagramas de la arquitectura: [docs/arquitectura.md](../docs/arquitectura.md)
+> Architecture diagrams: [docs/deployment-architecture.md](../docs/deployment-architecture.md)
 
 ## Architecture
 
