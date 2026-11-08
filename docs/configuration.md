@@ -160,6 +160,38 @@ call time — they're never registered, so they don't appear in a connected
 client's tool list at all. Their underlying Python functions remain
 available for local/unit-test use regardless of the flag.
 
+## Obsidian Headless sync (ob)
+
+```env
+# ENABLE_OB=true              # supervise `ob sync --continuous` + read-only tools
+# ENABLE_OB_OPS=true          # sync_restart
+# ENABLE_OB_ADMIN=false       # sync_set_* (ignored when READ_ONLY=true)
+# OB_BIN=ob
+# OB_VAULT_PATH=/path/to/vault  # defaults to VAULT_PATH; required with VAULTS_CONFIG
+# OB_LOG_LINES=1000
+# OB_COMMAND_TIMEOUT=60
+# OB_RESTART_BACKOFF_MAX=300
+# OB_RESTART_COOLDOWN=60
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ENABLE_OB` | `false` | Master switch: the server supervises one `ob sync --continuous` child and registers `sync_status`, `sync_logs`, `ob_info`, `list_remote_vaults`. When false the `obsidian_mcp.ob` package is not even imported. Accepts `1`/`true`/`yes` (case-insensitive, surrounding whitespace ignored), like the other `ENABLE_OB*` flags. |
+| `ENABLE_OB_OPS` | `false` | Adds `sync_restart`. |
+| `ENABLE_OB_ADMIN` | `false` | Adds the persistent `sync_set_*` tools; ignored when `READ_ONLY=true`. |
+| `OB_BIN` | `ob` | Path or name of the `ob` executable. |
+| `OB_VAULT_PATH` | `VAULT_PATH` | Vault to sync. Required in multi-vault mode. |
+| `OB_LOG_LINES` | `1000` | Lines kept in the in-memory, redacted sync log (max `sync_logs` returns). |
+| `OB_COMMAND_TIMEOUT` | `60` | Seconds before a one-shot `ob` command is killed. |
+| `OB_RESTART_BACKOFF_MAX` | `300` | Maximum seconds between restarts of a crashing sync child. |
+| `OB_RESTART_COOLDOWN` | `60` | `sync_restart` is refused if the child was (re)started less than this many seconds ago; `0` disables it. |
+
+`ob` children run with a minimal environment (`PATH`, `HOME`,
+`XDG_CONFIG_HOME`, `LANG`, `LC_ALL`, `OBSIDIAN_AUTH_TOKEN`) so server secrets
+never reach them. `OBSIDIAN_AUTH_TOKEN` and the content of
+`$XDG_CONFIG_HOME/obsidian-headless/auth_token` are masked in all output. See
+the README section "ob CLI wrapper" for the architecture and tool tiers.
+
 ## Transport and network
 
 ```env
