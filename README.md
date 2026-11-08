@@ -118,6 +118,99 @@ Add to your MCP config (`~/.claude/mcp.json` or `claude_desktop_config.json`):
 | **[Architecture](docs/architecture.md)** | Source layout and the authorization/concurrency layers underneath the tools |
 | **[Development](docs/development.md)** | Running tests, linting, and the local HTTP smoke test |
 
+## ob CLI wrapper
+
+Optional, off by default. With `ENABLE_OB=true` the server supervises
+[Obsidian Headless](https://www.npmjs.com/package/obsidian-headless) (`npm i -g
+obsidian-headless`, command `ob`, tested against 0.0.14) so the vault it
+serves is kept in sync with Obsidian Sync, and exposes a few tools to inspect
+and steer that sync. With `ENABLE_OB` unset or false the server behaves
+exactly as before: the `obsidian_mcp.ob` package is not even imported, no
+tool is registered and no process is started.
+
+### Architecture
+
+- **Supervisor** (`src/obsidian_mcp/ob/supervisor.py`): on startup `main()`
+  launches one child, `ob sync --path <OB_VAULT_PATH> --continuous`, with the
+  vault as working directory, no shell, in its own process group. A monitor
+  thread captures stdout+stderr line by line into a ring buffer of
+  `OB_LOG_LINES` lines (redacted before storage) and tracks pid, state
+  (`starting`/`running`/`backoff`/`failed`/`stopped`), start time, restart
+  count, last exit code, last `Fully synced` time and recent error lines.
+  Crashes are restarted with exponential backoff (2s doubling up to
+  `OB_RESTART_BACKOFF_MAX`, reset after 60s of stable uptime). Exit code 2
+  (not logged in) and 3 (no sync configuration) are reported as `failed` with
+  a hint and retried only every `OB_RESTART_BACKOFF_MAX` seconds. At most one
+  child ever runs. On shutdown (normal exit or SIGTERM) the child gets
+  SIGTERM (`ob` then releases `.obsidian/.sync.lock`), and SIGKILL after 10s.
+- **Runner** (`runner.py`): one-shot `ob` commands run from an argv list
+  checked against a subcommand/flag allowlist, never through a shell, with
+  `OB_COMMAND_TIMEOUT` (process group killed on expiry) and a 256 KB output
+  cap per stream. `--path` always comes from configuration, never from the
+  model.
+- **Redaction** (`redact.py`): e-mails, `Bearer …`, `password=`/`token=`/
+  `encryptionKey`-style values, long opaque tokens (≥24 chars of hex, or
+  mixed-case alphanumerics with digits) and the value of
+  `OBSIDIAN_AUTH_TOKEN` are masked in every tool result, log buffer line,
+  error message and server log record. JSON keys such as `encryptionKey`,
+  `token`, `email` are dropped entirely; vault ids and local paths are kept.
+- **Admin changes**: `ob sync-config` takes no lock and the continuous
+  process only reads config at start, so every admin tool does *stop child →
+  `ob sync-config --path V <flag> <value> --json` → restart child* (the child
+  is restarted even if the config command fails).
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ENABLE_OB` | `false` | Master switch: supervisor + read-only tools |
+| `ENABLE_OB_OPS` | `false` | Adds the ops tier (`sync_restart`) |
+| `ENABLE_OB_ADMIN` | `false` | Adds the admin tier (`sync_set_*`); ignored when `READ_ONLY=true` |
+| `OB_BIN` | `ob` | Path or name of the `ob` executable |
+| `OB_VAULT_PATH` | `VAULT_PATH` | Vault to sync. **Required** with multi-vault (`VAULTS_CONFIG`): startup fails with a clear error instead of guessing |
+| `OB_LOG_LINES` | `1000` | Ring-buffer size (max lines `sync_logs` returns) |
+| `OB_COMMAND_TIMEOUT` | `60` | Seconds before a one-shot `ob` command is killed |
+| `OB_RESTART_BACKOFF_MAX` | `300` | Maximum seconds between restarts of a crashing sync child |
+
+`READ_ONLY=true` disables only the admin tier; the ops tier depends only on
+`ENABLE_OB_OPS`.
+
+### Tools
+
+| Tier | Tool | What it does |
+|---|---|---|
+| read-only | `sync_status` | Supervisor state + `ob sync-status --json` (vault, mode, conflict strategy, device, file types, configs, excluded folders) |
+| read-only | `sync_logs(lines=100)` | Tail of the redacted log buffer, clamped to 1..`OB_LOG_LINES` |
+| read-only | `ob_info` | `ob --version`, this vault's `sync-list-local` entry, device name, whether an auth token file/env exists (boolean only). No network |
+| read-only | `list_remote_vaults` | `ob sync-list-remote --json` (network) |
+| ops | `sync_restart` | SIGTERM the child, wait, relaunch; returns the new status |
+| admin | `sync_set_excluded_folders(folders)` | Persistent: replaces excluded folders (relative, no `..`, no leading `/`, no commas; `[]` clears) |
+| admin | `sync_set_file_types(types)` | Persistent: `image`, `audio`, `video`, `pdf`, `unsupported` (`[]` clears) |
+| admin | `sync_set_configs(categories)` | Persistent: `app`, `appearance`, `appearance-data`, `hotkey`, `core-plugin`, `core-plugin-data`, `community-plugin`, `community-plugin-data` (`[]` clears) |
+| admin | `sync_set_conflict_strategy(strategy)` | Persistent: `merge` or `conflict` |
+
+**Never exposed:** `ob login`, `logout`, `sync-setup`, `sync-create-remote`,
+`sync-unlink`, `publish-*`, `sync-config --mode`, `--config-dir`,
+`--device-name`, or any arbitrary command/flag.
+
+### Operator setup and security notes
+
+- Logging in and linking the vault are done **manually by the operator**, as
+  the user the server runs as: `ob login`, then `ob sync-setup --path <vault>`
+  (and optionally `ob sync-config …`). The MCP server never does this.
+- `ob` stores credentials in plaintext under the server user's home:
+  `${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-headless/auth_token` and
+  `…/sync/<vaultId>/config.json` (contains the vault `encryptionKey`). The
+  wrapper never reads or returns these files (`ob_info` only checks the
+  token file exists). Run the server as a **dedicated, unprivileged user**
+  whose home holds nothing else, keep that directory `0700`, and make sure
+  it is outside every vault and not reachable through the MCP path policy.
+- Admin tools persistently change what syncs to/from every device; enable
+  `ENABLE_OB_ADMIN` only for trusted clients. In multi-vault mode the ob
+  tools act on `OB_VAULT_PATH` for any authenticated identity.
+- If the server process is SIGKILLed the child cannot be cleaned up; `ob`
+  reclaims its stale lock after 5s on the next start.
+
 ## License
 
 MIT
