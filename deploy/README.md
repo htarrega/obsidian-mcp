@@ -46,7 +46,7 @@ Python (que cierra a `ob`), y lo que quede vivo tras 30 s recibe SIGKILL.
 | `/opt/obsidian-mcp/app` | root, 0755 | `git clone` en un commit concreto (detached) + `.venv` |
 | `/opt/obsidian-mcp/python` | root, 0755 | CPython gestionado por uv (`UV_PYTHON_INSTALL_DIR`) |
 | `/opt/obsidian-mcp/DEPLOYED_COMMIT`, `PREVIOUS_COMMIT` | root | commit activo y anterior (rollback) |
-| `/etc/obsidian-mcp/env` | root:obsidian 0640 | configuración y secretos (`EnvironmentFile`) |
+| `/etc/obsidian-mcp/env` | root:root 0600 (directorio root:root 0700) | configuración y secretos (`EnvironmentFile`) |
 | `/var/lib/obsidian` | obsidian 0750 | HOME del usuario `obsidian` (shell `nologin`) |
 | `/var/lib/obsidian/vault` | obsidian 0700 | el vault sincronizado |
 | `/var/lib/obsidian/mcp-data` | obsidian 0700 | `FASTMCP_HOME`: tokens OAuth, locks, audit log |

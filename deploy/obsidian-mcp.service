@@ -15,7 +15,8 @@ Type=simple
 User=obsidian
 Group=obsidian
 
-# Secrets and runtime configuration (root:obsidian 0640). See deploy/env.example.
+# Secrets and runtime configuration (root:root 0600; read by systemd
+# as root, never by the service user). See deploy/env.example.
 EnvironmentFile=/etc/obsidian-mcp/env
 # ob keeps its credentials under ${XDG_CONFIG_HOME:-$HOME/.config}/obsidian-headless.
 # Pin both so everything ob writes stays inside /var/lib/obsidian (the only

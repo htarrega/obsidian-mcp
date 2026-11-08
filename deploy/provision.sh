@@ -314,17 +314,19 @@ step_app() {
 
 step_env() {
 	log "Environment file ${ENV_FILE}"
-	install -d -o root -g "$SVC_USER" -m 0750 "$ETC_DIR"
+	# root-only: systemd reads EnvironmentFile as root before dropping to the
+	# service user, which never needs (and must not get) read access to it.
+	install -d -o root -g root -m 0700 "$ETC_DIR"
 	if [[ ! -e $ENV_FILE ]]; then
 		local tmp
 		tmp=$(mktemp)
 		sed "s/obsidian\\.mcp\\.htarrega\\.me/${DOMAIN}/g" "$SCRIPT_DIR/env.example" >"$tmp"
-		install -o root -g "$SVC_USER" -m 0640 "$tmp" "$ENV_FILE"
+		install -o root -g root -m 0600 "$tmp" "$ENV_FILE"
 		rm -f "$tmp"
 		info "created from env.example (fill in the RELLENAR values)"
 	else
-		chown root:"$SVC_USER" "$ENV_FILE"
-		chmod 0640 "$ENV_FILE"
+		chown root:root "$ENV_FILE"
+		chmod 0600 "$ENV_FILE"
 		info "exists, left untouched (permissions enforced)"
 		grep -qx "PUBLIC_BASE_URL=https://${DOMAIN}" "$ENV_FILE" \
 			|| warn "PUBLIC_BASE_URL in $ENV_FILE is not https://${DOMAIN}"
