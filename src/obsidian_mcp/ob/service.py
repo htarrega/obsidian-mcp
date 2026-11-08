@@ -15,8 +15,9 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from .redact import register_secret_file
 from .runner import ObRunner
-from .settings import ObSettings
+from .settings import ObSettings, auth_token_file
 from .supervisor import SyncSupervisor, make_supervisor
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,10 @@ def start_ob(settings: ObSettings | None = None) -> ObService:
         service = ObService.from_settings(resolved)
         set_service(service)
     _install_exit_hooks()
+    # Mask the ob login token verbatim in everything we return or log. Read
+    # once here; the content is never returned or logged.
+    if register_secret_file(auth_token_file()):
+        logger.info("Registered the ob auth_token for redaction")
     logger.info(
         "Starting ob sync supervisor for %s (bin=%s)", resolved.vault_path, resolved.ob_bin
     )

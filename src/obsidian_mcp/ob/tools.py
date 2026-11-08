@@ -24,7 +24,7 @@ from ..envelope import read_result
 from .redact import redact_obj
 from .runner import ObCommandError, ObError
 from .service import ObService, get_service
-from .settings import ObFlags
+from .settings import ObFlags, auth_token_file
 from .validate import (
     CONFIG_CATEGORIES,
     FILE_TYPES,
@@ -75,11 +75,6 @@ def _sync_config(service: ObService) -> tuple[dict[str, Any] | None, str | None]
     if not isinstance(data, dict):
         return None, "ob sync-status returned unexpected JSON"
     return data, None
-
-
-def _auth_token_file() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "obsidian-headless" / "auth_token"
 
 
 # ── read-only tier ────────────────────────────────────────────────────────
@@ -159,7 +154,7 @@ def ob_info() -> dict:
         "vault_path": str(service.settings.vault_path),
         "local_vault": local_entry,
         "device_name": (config or {}).get("deviceName"),
-        "auth_token_file_present": _auth_token_file().is_file(),
+        "auth_token_file_present": auth_token_file().is_file(),
         "auth_token_env_set": bool(os.environ.get("OBSIDIAN_AUTH_TOKEN")),
     }
     if errors:

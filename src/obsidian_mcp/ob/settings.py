@@ -76,6 +76,13 @@ def _positive_float(env: Mapping[str, str], name: str, default: float) -> float:
     return value
 
 
+def auth_token_file(environ: Mapping[str, str] | None = None) -> Path:
+    """Where ob keeps its login token: ``$XDG_CONFIG_HOME/obsidian-headless/auth_token``."""
+    env = os.environ if environ is None else environ
+    base = env.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "obsidian-headless" / "auth_token"
+
+
 def _resolve_vault_path(env: Mapping[str, str]) -> Path:
     raw = env.get("OB_VAULT_PATH", "").strip()
     if not raw:

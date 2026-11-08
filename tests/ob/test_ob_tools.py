@@ -174,3 +174,27 @@ def test_admin_restarts_child_even_if_config_fails(fake_ob, ob_service, wait, mo
         tools.sync_set_conflict_strategy("conflict")
     wait(lambda: fake_ob.live_sync_pids())
     assert _admin_sequence(fake_ob) == ["sync", "sync-config", "sync"]
+
+
+def test_start_ob_registers_auth_token_file_for_redaction(fake_ob, tmp_path, monkeypatch, wait):
+    from obsidian_mcp.ob import redact as redact_mod
+    from obsidian_mcp.ob import service as service_mod
+
+    token_file = tmp_path / "xdg" / "obsidian-headless" / "auth_token"
+    token_file.parent.mkdir(parents=True)
+    token_file.write_text("file-token-zz9\n")
+    monkeypatch.setenv("FAKE_OB_SYNC_LINES", "auth with file-token-zz9")
+    monkeypatch.setattr(service_mod, "_install_exit_hooks", lambda: None)
+    redact_mod.clear_registered_secrets()
+    try:
+        svc = service_mod.start_ob(fake_ob.settings())
+        try:
+            wait(lambda: any("auth with" in line for line in svc.supervisor.logs(50)))
+            joined = "\n".join(svc.supervisor.logs(50))
+            assert "file-token-zz9" not in joined
+            assert "file-token-zz9" not in str(tools.ob_info())
+        finally:
+            service_mod.stop_ob()
+            service_mod.set_service(None)
+    finally:
+        redact_mod.clear_registered_secrets()

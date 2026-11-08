@@ -155,11 +155,15 @@ tool is registered and no process is started.
   cap per stream. `--path` always comes from configuration, never from the
   model.
 - **Redaction** (`redact.py`): e-mails, `Bearer …`, `password=`/`token=`/
-  `encryptionKey`-style values, long opaque tokens (≥24 chars of hex, or
-  mixed-case alphanumerics with digits) and the value of
-  `OBSIDIAN_AUTH_TOKEN` are masked in every tool result, log buffer line,
-  error message and server log record. JSON keys such as `encryptionKey`,
-  `token`, `email` are dropped entirely; vault ids and local paths are kept.
+  `encryptionKey`/`key=`/`cookie:`/`session=`-style values (quoted values up
+  to the closing quote; unquoted passwords, passphrases, secrets and cookies
+  to the end of the line), long opaque tokens (≥24 chars of hex, or
+  mixed-case alphanumerics with digits), the value of `OBSIDIAN_AUTH_TOKEN`
+  and the content of ob's `auth_token` file (read once at startup, never
+  returned) are masked in every tool result, log buffer line, error message
+  and server log record. JSON keys containing `key`, `token`, `secret`,
+  `pass`, `salt`, `cookie` or `session`, and `email`, are dropped entirely;
+  vault ids and local paths are kept.
 - **Admin changes**: `ob sync-config` takes no lock and the continuous
   process only reads config at start, so every admin tool does *stop child →
   `ob sync-config --path V <flag> <value> --json` → restart child* (the child
