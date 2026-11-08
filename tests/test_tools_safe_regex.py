@@ -1,15 +1,18 @@
 """ReDoS protection for caller-supplied regexes (length cap + match timeout)."""
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
 
 import obsidian_mcp.config as cfg_mod
-from obsidian_mcp.config import ConfigError, regex_limits_from_env
+from obsidian_mcp.config import ConfigError, regex_limits_from_env, regex_max_repeat_from_env
+from obsidian_mcp.tools import safe_regex
 from obsidian_mcp.tools.read import search_notes
 from obsidian_mcp.tools.safe_regex import (
     RegexTimeoutError,
+    RegexTooComplexError,
     RegexTooLongError,
     compile_user_regex,
 )
@@ -140,3 +143,98 @@ def test_invalid_regex_still_reported(vault_factory):
         patch_note_text("note.md", "(unclosed", "x", mode="regex")
     # search keeps its lenient behaviour: an invalid regex simply matches nothing
     assert search_notes("(unclosed", mode="regex") == []
+
+
+# ── compile-time repetition limits (memory bombs) ────────────────────────────
+
+BOMBS = [
+    r"(((a{50}){50}){50}){20}",  # ~800 MB RSS at compile without the check
+    r"(?:(?:a{100}){100}){100}",
+    r"a{1000}",
+    r"a{0,101}",
+    r"a{101,}",
+    r"(a{99999999999999999999})",
+    r"((a{2}){2}){2}",  # three counted levels
+    r"(?:x|(a{100}b){101})",
+    r"(a{100}){100}{2}",
+    r"(?x) ( ( a{2} ) {2} ) {2}",  # verbose: whitespace before the quantifier
+]
+
+
+@pytest.mark.parametrize("pattern", BOMBS)
+def test_repetition_bombs_rejected_before_compile(vault_factory, monkeypatch, pattern):
+    vault_factory({"note.md": "x"})
+
+    def boom(*args, **kwargs):  # the bombs must never reach the compiler
+        raise AssertionError("regex.compile called for a rejected pattern")
+
+    monkeypatch.setattr(safe_regex.regex, "compile", boom)
+    with pytest.raises(RegexTooComplexError):
+        compile_user_regex(pattern)
+
+
+def test_verbose_flag_ignores_whitespace_for_cost(vault_factory, monkeypatch):
+    vault_factory({"note.md": "x"})
+    monkeypatch.setattr(safe_regex.regex, "compile", lambda *a, **k: pytest.fail("compiled"))
+    with pytest.raises(RegexTooComplexError):
+        compile_user_regex("( ( a{2} ) {2} ) {2}", re.VERBOSE)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"\d{4}-\d{2}-\d{2}",
+        r"(?:\d{1,3}\.){3}\d{1,3}",
+        r"\d+(?:\.\d+(?:\.\d+)?)?",
+        r"((a+)+)+",  # star nesting is not expanded at compile time
+        r"(a{100}){100}",
+        r"[a{9999}]+",  # braces inside a character class are literals
+        r"\{9999\}",  # escaped braces are literals
+        r"a\{1000}",
+        r"\p{L}{3}",
+        r"x{,5}y{2,}?z{3}+",
+        r"(?#a{9999})a",
+        r"[[:alpha:]]{2}",
+        r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]",
+        r"{foo}",
+    ],
+)
+def test_normal_patterns_still_compile(vault_factory, pattern):
+    vault_factory({"note.md": "x"})
+    assert compile_user_regex(pattern).pattern == pattern
+
+
+def test_max_repeat_configurable(vault_factory, monkeypatch):
+    monkeypatch.setenv("REGEX_MAX_REPEAT", "5")
+    cfg_mod._config = None
+    vault_factory({"note.md": "x"})
+    compile_user_regex("a{5}")
+    with pytest.raises(RegexTooComplexError, match="REGEX_MAX_REPEAT"):
+        compile_user_regex("a{6}")
+    cfg_mod._config = None
+
+
+@pytest.mark.parametrize("value", ["0", "-3", "many"])
+def test_max_repeat_invalid(monkeypatch, value):
+    monkeypatch.setenv("REGEX_MAX_REPEAT", value)
+    with pytest.raises(ConfigError, match="REGEX_MAX_REPEAT"):
+        regex_max_repeat_from_env()
+
+
+@pytest.mark.parametrize("exc", [MemoryError, RecursionError, OverflowError])
+def test_compile_resource_errors_become_value_errors(vault_factory, monkeypatch, exc):
+    vault_factory({"note.md": "x"})
+
+    def fail(*args, **kwargs):
+        raise exc()
+
+    monkeypatch.setattr(safe_regex.regex, "compile", fail)
+    with pytest.raises(ValueError) as excinfo:
+        compile_user_regex("abc")
+    assert not isinstance(excinfo.value, (MemoryError, RecursionError, OverflowError))
+
+
+def test_search_reports_too_complex_instead_of_matching_nothing(vault_factory):
+    vault_factory({"note.md": "x"})
+    with pytest.raises(RegexTooComplexError):
+        search_notes(r"(((a{50}){50}){50}){20}", mode="regex")

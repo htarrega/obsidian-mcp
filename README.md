@@ -81,6 +81,7 @@ Security settings (all optional, hardened defaults; details in
 | `MASK_ERROR_DETAILS` | `true` |
 | `REGEX_MAX_LENGTH` | `500` |
 | `REGEX_TIMEOUT_SECONDS` | `2` |
+| `REGEX_MAX_REPEAT` | `100` |
 | `OAUTH_GITHUB_SCOPES` | `read:user` |
 | `OAUTH_ALLOWED_CLIENT_REDIRECT_URIS` | claude.ai / claude.com MCP callbacks, `http://localhost:*`, `http://127.0.0.1:*` |
 | `OAUTH_ENABLE_CIMD` | `false` |

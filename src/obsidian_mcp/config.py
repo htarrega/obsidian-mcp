@@ -406,6 +406,7 @@ class Config:
     mask_error_details: bool = field(init=False)
     regex_max_length: int = field(init=False)
     regex_timeout_seconds: float = field(init=False)
+    regex_max_repeat: int = field(init=False)
     enable_canvas: bool = field(init=False)
     enable_excalidraw: bool = field(init=False)
     enable_kanban: bool = field(init=False)
@@ -607,6 +608,7 @@ class Config:
         regex_max_length, regex_timeout_seconds = regex_limits_from_env()
         set_value(self, "regex_max_length", regex_max_length)
         set_value(self, "regex_timeout_seconds", regex_timeout_seconds)
+        set_value(self, "regex_max_repeat", regex_max_repeat_from_env())
 
         oauth_configured = bool(
             self.oauth_github_client_id or self.oauth_github_client_secret
@@ -771,6 +773,12 @@ def regex_limits_from_env() -> tuple[int, float]:
     if not math.isfinite(timeout) or timeout <= 0:
         raise ConfigError("REGEX_TIMEOUT_SECONDS must be a finite positive number")
     return max_length, timeout
+
+
+def regex_max_repeat_from_env() -> int:
+    """REGEX_MAX_REPEAT (default 100): largest ``{n}``/``{n,m}`` repetition
+    count accepted in a caller-supplied regex (compile-time memory guard)."""
+    return _env_positive_int("REGEX_MAX_REPEAT", 100)
 
 
 _config: Config | None = None

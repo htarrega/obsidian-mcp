@@ -10,7 +10,12 @@ from ..domain.parser import parse_note
 from ..storage.filesystem import VaultStorage
 from ..storage.policy import matches_path_rule
 from .query import matches_frontmatter_filter
-from .safe_regex import RegexTimeoutError, RegexTooLongError, compile_user_regex
+from .safe_regex import (
+    RegexTimeoutError,
+    RegexTooComplexError,
+    RegexTooLongError,
+    compile_user_regex,
+)
 
 
 def list_notes(folder: str = "", include_meta: bool = False) -> list:
@@ -109,7 +114,7 @@ def search_notes(
 
     try:
         pattern = compile_user_regex(query, re.IGNORECASE) if mode == "regex" else None
-    except RegexTooLongError:
+    except (RegexTooLongError, RegexTooComplexError):
         raise
     except ValueError:
         pattern = None  # invalid regex: no matches, as before
