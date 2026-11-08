@@ -1,0 +1,36 @@
+# Legend for every deployment diagram.
+# Render: d2 --layout elk --pad 40 00-legend.d2 00-legend.svg
+...@_theme
+
+direction: right
+
+nodes: "NODES" {
+  class: zone-net
+  grid-columns: 4
+  grid-gap: 24
+  ext: "third-party black box\ninputs / outputs only" {class: ext}
+  own: "your service / code" {class: own}
+  sec: "your security control" {class: sec}
+  infra: "your cloud / host config" {class: infra}
+  client: "you / your devices" {class: client}
+  ops: "deploy script /\noperator action" {class: ops}
+  data: "data on disk" {class: data}
+  zone: "TRUST BOUNDARY (dashed)" {
+    class: zone-own
+    inner: "inside" {class: own}
+  }
+}
+
+edges: "EDGES" {
+  class: zone-net
+  direction: down
+  a1: "A" {class: ext}
+  b1: "B" {class: own}
+  a2: "A" {class: ext}
+  b2: "B" {class: own}
+  a3: "A" {class: ext}
+  b3: "B" {class: own}
+  a1 -> b1: "data / control flow" {class: flow}
+  a2 -> b2: "main request path (HTTPS)" {class: main}
+  a3 -> b3: "feedback loop / return signal" {class: loop}
+}

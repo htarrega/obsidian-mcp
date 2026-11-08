@@ -1,0 +1,101 @@
+# Inside obsidian-remote-mcp: routes, middleware, policy, storage, ob package.
+# Render: d2 --layout elk --pad 40 03-service-internals.d2 03-service-internals.svg
+...@_theme
+
+direction: down
+
+title: "Inside the service — one Python process, one policy layer" {
+  near: top-center
+  shape: text
+  style: {font-size: 20; font-color: "#e2e8f0"; font: mono; bold: true}
+}
+
+caddy: "Caddy\n(black box)" {class: ext}
+github: "GitHub API\n(black box)" {class: ext}
+
+svc: "obsidian-remote-mcp · 127.0.0.1:8000 · User=obsidian" {
+  class: zone-own
+
+  fasthttp: "FastMCP HTTP app\nOAuth routes, JWT checks\n(library, black box)" {class: ext}
+  verifier: "_RestrictedGitHubVerifier\nlogin allowlist, every request" {class: sec}
+
+  routes: "CUSTOM STARLETTE ROUTES · bypass FastMCP middleware" {
+    class: zone-sec
+    health: "GET /health\nno auth, no vault content" {class: own}
+    attach: "/attachments/{path}\nGET / PUT, own auth:\nOAuth Bearer or HMAC token" {class: sec}
+  }
+
+  mw: "YOUR FASTMCP MIDDLEWARE" {
+    class: zone-own
+    vaultres: "VaultResolutionMiddleware\nidentity -> vault" {class: own}
+    userfacing: "UserFacingErrorMiddleware\nunmask expected errors only" {class: sec}
+  }
+
+  dispatch: "FastMCP tool dispatch\nmask_error_details\n(library, black box)" {class: ext}
+
+  tools: "TOOLS" {
+    class: zone-own
+    vaulttools: "vault tools\nread, write, query, ..." {class: own}
+    saferegex: "safe_regex\nlength + nested-repeat check\nper-search timeout" {class: sec}
+    obtools: "ob tools" {class: own}
+  }
+
+  policy: "POLICY LAYER · storage/policy.py" {
+    class: zone-sec
+    canon: "canonicalise\nvault-relative path" {class: sec}
+    allow: "READ_ONLY, READ_PATHS,\nWRITE_PATHS" {class: sec}
+    deny: "DENY_READ_PATHS,\nDENY_WRITE_PATHS" {class: sec}
+  }
+
+  storage: "VaultStorage · storage/filesystem.py" {
+    class: zone-own
+    fs: "fd-relative walk, O_NOFOLLOW\natomic writes" {class: own}
+    rev: "revision preconditions\nREQUIRE_WRITE_PRECONDITIONS" {class: sec}
+  }
+
+  obpkg: "ob PACKAGE" {
+    class: zone-own
+    tiers: "tiers\nread-only: ENABLE_OB\nops: ENABLE_OB_OPS\nadmin: ENABLE_OB_ADMIN, not READ_ONLY" {class: sec}
+    never: "never exposed\nlogin, logout, sync-setup,\nsync-unlink, publish, free-form" {class: sec}
+    runner: "runner\nsubcommand + flag allowlist, no shell\ntimeout, minimal env, 256 KiB cap" {class: sec}
+    supervisor: "supervisor\nexponential backoff\nring buffer (OB_LOG_LINES)" {class: own}
+    redact: "redact\ne-mails, bearer, tokens, keys" {class: sec}
+  }
+}
+
+vault: "vault/" {class: data}
+oneshot: "ob one-shot\nsync-status, sync-config, ...\n(black box)" {class: ext}
+child: "ob sync --continuous\n(black box)" {class: ext}
+
+# ── flows ──────────────────────────────────────────────────────────────
+caddy -> svc.fasthttp: "POST /mcp" {class: main}
+caddy -> svc.routes.attach: "GET / PUT /attachments" {class: flow}
+caddy -> svc.routes.health: "GET /health" {class: flow}
+svc.fasthttp -> svc.verifier: "Bearer JWT" {class: flow}
+svc.verifier <-> github: "GET /user, cached 300 s" {class: flow}
+svc.fasthttp -> svc.mw.vaultres: "authenticated request" {class: main}
+svc.mw.vaultres -> svc.mw.userfacing: "" {class: main}
+svc.mw.userfacing -> svc.dispatch: "" {class: main}
+svc.dispatch -> svc.tools.vaulttools: "tool call" {class: flow}
+svc.dispatch -> svc.tools.obtools: "tool call" {class: flow}
+svc.tools.vaulttools -> svc.tools.saferegex: "user patterns" {class: flow}
+svc.tools.vaulttools -> svc.policy.canon: "path as text" {class: flow}
+svc.routes.attach -> svc.policy.canon: "path as text" {class: flow}
+svc.policy.canon -> svc.policy.allow {class: flow}
+svc.policy.allow -> svc.policy.deny {class: flow}
+svc.policy.deny -> svc.storage.fs: "authorised VaultPath" {class: flow}
+svc.storage.fs -> svc.storage.rev {class: flow}
+svc.storage.rev -> vault: "bytes" {class: flow}
+svc.tools.obtools -> svc.obpkg.tiers {class: flow}
+svc.obpkg.tiers -> svc.obpkg.never: "no path" {class: flow}
+svc.obpkg.tiers -> svc.obpkg.runner: "validated argv" {class: flow}
+svc.obpkg.tiers -> svc.obpkg.supervisor: "status, logs, restart" {class: flow}
+svc.obpkg.runner -> oneshot: "argv, minimal env, timeout" {class: flow}
+svc.obpkg.supervisor -> child: "spawn / SIGTERM process group" {class: flow}
+child <-> vault: "vault files (bypasses the policy layer)" {class: flow}
+
+# ── feedback / return signals ──────────────────────────────────────────
+oneshot -> svc.obpkg.redact: "stdout, exit code" {class: loop}
+child -> svc.obpkg.redact: "stdout lines, exit code" {class: loop}
+svc.obpkg.redact -> svc.obpkg.supervisor: "redacted text" {class: loop}
+svc.mw.userfacing -> svc.fasthttp: "result, or masked error" {class: loop}

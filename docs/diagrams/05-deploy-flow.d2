@@ -1,0 +1,54 @@
+# Provision / update / rollback flow.
+# Render: d2 --layout elk --pad 40 05-deploy-flow.d2 05-deploy-flow.svg
+...@_theme
+
+direction: down
+
+title: "Deploy, update and rollback" {
+  near: top-center
+  shape: text
+  style: {font-size: 20; font-color: "#e2e8f0"; font: mono; bold: true}
+}
+
+repo: "GitHub repo\nhtarrega/obsidian-mcp\n(black box)" {class: ext}
+apt: "APT repos: NodeSource, Caddy\nnpm: obsidian-headless\n(black boxes)" {class: ext}
+sha: "full 40-hex commit SHA\n(no branches or tags)" {class: ops}
+newvm: "new VM?" {class: ops; shape: diamond}
+
+host: "VM · run as root" {
+  class: zone-infra
+  provision: "sudo COMMIT=SHA ./provision.sh\npackages, unattended-upgrades, sshd,\niptables, sysctl, user, Node + ob,\nuv + Python, Caddy, fail2ban, unit" {class: ops}
+  update: "sudo ./update.sh SHA" {class: ops}
+  verify: "APT signing-key fingerprints checked\npinned OB_VERSION, UV_VERSION,\nNODE_MAJOR, CADDY_VERSION" {class: sec}
+  fetch: "git fetch\ncheckout --detach SHA" {class: ops}
+  sync: "uv sync --locked --no-dev\n--no-editable --compile-bytecode" {class: ops}
+  restore: "restore previous commit\nand its venv (update.sh)" {class: ops}
+  record: "write PREVIOUS_COMMIT\nand DEPLOYED_COMMIT" {class: data}
+  envcheck: "env file still has\nRELLENAR placeholders?" {class: sec; shape: diamond}
+  manual: "operator, as user obsidian:\nob login, ob sync-setup,\nfill /etc/obsidian-mcp/env" {class: client}
+  restart: "systemctl restart obsidian-mcp" {class: ops}
+  health: "GET 127.0.0.1:8000/health\nOK within 60 s?" {class: ops; shape: diamond}
+  live: "live" {class: own}
+  rollback: "operator: sudo ./update.sh rollback\n(toggles to PREVIOUS_COMMIT)" {class: client}
+}
+
+sha -> newvm {class: flow}
+newvm -> host.provision: "yes" {class: flow}
+newvm -> host.update: "no" {class: flow}
+apt -> host.verify: "packages + keys" {class: flow}
+host.verify -> host.provision {class: flow}
+host.provision -> host.fetch {class: flow}
+host.update -> host.fetch {class: flow}
+repo -> host.fetch: "git objects" {class: flow}
+host.fetch -> host.sync {class: flow}
+host.sync -> host.record: "ok" {class: flow}
+host.sync -> host.restore: "fails" {class: loop}
+host.record -> host.envcheck: "provision.sh" {class: flow}
+host.record -> host.restart: "update.sh" {class: flow}
+host.envcheck -> host.manual: "yes: service not started" {class: loop}
+host.envcheck -> host.restart: "no" {class: flow}
+host.manual -> host.restart: "then start" {class: flow}
+host.restart -> host.health {class: flow}
+host.health -> host.live: "yes" {class: main}
+host.health -> host.rollback: "no: exit 1" {class: loop}
+host.rollback -> host.fetch: "previous SHA" {class: loop}

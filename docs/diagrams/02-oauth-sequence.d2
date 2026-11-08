@@ -1,0 +1,65 @@
+# OAuth: FastMCP acts as an OAuth proxy in front of GitHub.
+# Render: d2 --layout elk --pad 40 02-oauth-sequence.d2 02-oauth-sequence.svg
+...@_theme
+
+title: "OAuth sequence — claude.ai never sees the GitHub token" {
+  near: top-center
+  shape: text
+  style: {font-size: 20; font-color: "#e2e8f0"; font: mono; bold: true}
+}
+
+seq: "" {
+  shape: sequence_diagram
+  style: {fill: "#0b1120"; stroke: "#0b1120"}
+
+  # Actors, left to right. Third parties are single black-box participants.
+  claude: "claude.ai\n(black box)" {class: ext}
+  browser: "your browser\n(black box)" {class: client}
+  fastmcp: "FastMCP OAuth proxy\n(library, black box)" {class: ext}
+  verifier: "_RestrictedGitHubVerifier\n(your code)" {class: sec}
+  tools: "vault + ob tools\n(your code)" {class: own}
+  github: "GitHub\n(black box)" {class: ext}
+
+  register: "1 · Dynamic Client Registration" {
+    class: zone-net
+    claude -> fastmcp: "POST /register" {class: flow}
+    fastmcp.n1: "redirect_uri must be in\nOAUTH_ALLOWED_CLIENT_REDIRECT_URIS.\nCIMD off: no client-supplied URL is fetched." {class: infra}
+    fastmcp -> claude: "client_id (stored in FASTMCP_HOME)" {class: loop}
+  }
+
+  authorize: "2 · Authorization with consent" {
+    class: zone-net
+    claude -> browser: "open /authorize" {class: flow}
+    browser -> fastmcp: "GET /authorize" {class: flow}
+    fastmcp -> browser: "consent page" {class: loop}
+    browser -> fastmcp: "approve" {class: flow}
+    fastmcp -> browser: "redirect to GitHub (scope read:user)" {class: loop}
+    browser -> github: "sign in" {class: flow}
+    github -> browser: "redirect to /auth/callback with GitHub code" {class: loop}
+    browser -> fastmcp: "GET /auth/callback" {class: flow}
+    fastmcp -> github: "exchange code for GitHub token" {class: flow}
+    github -> fastmcp: "GitHub access token" {class: loop}
+    fastmcp.n2: "GitHub token stored encrypted in FASTMCP_HOME" {class: infra}
+    fastmcp -> browser: "redirect to claude.ai with FastMCP code" {class: loop}
+    browser -> claude: "FastMCP code" {class: flow}
+  }
+
+  token: "3 · Token issue" {
+    class: zone-net
+    claude -> fastmcp: "POST /token" {class: flow}
+    fastmcp -> claude: "FastMCP JWT (30 d) + refresh token (90 d)" {class: loop}
+  }
+
+  every: "4 · Every POST /mcp (loop)" {
+    class: zone-sec
+    claude -> fastmcp: "POST /mcp, Authorization: Bearer JWT" {class: main}
+    fastmcp -> verifier: "load_access_token: JWT mapped to GitHub token" {class: flow}
+    verifier.n3: "GitHub answer cached 300 s;\non a miss: GET api.github.com/user" {class: infra}
+    verifier -> github: "GET /user (cache miss only)" {class: flow}
+    github -> verifier: "login" {class: loop}
+    verifier.n4: "login in OAUTH_GITHUB_ALLOWED_LOGINS?\nno allow-all mode" {class: sec}
+    verifier -> fastmcp: "AccessToken, or None (401)" {class: loop}
+    fastmcp -> tools: "dispatch tool call (allowed only)" {class: main}
+    tools -> claude: "tool result, or 401" {class: loop}
+  }
+}

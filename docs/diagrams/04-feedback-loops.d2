@@ -1,0 +1,93 @@
+# The feedback loops that keep the deployment stable.
+# Render: d2 --layout elk --pad 40 04-feedback-loops.d2 04-feedback-loops.svg
+...@_theme
+
+direction: down
+
+title: "Feedback loops" {
+  near: top-center
+  shape: text
+  style: {font-size: 20; font-color: "#e2e8f0"; font: mono; bold: true}
+}
+
+l1: "LOOP 1 · ob supervision" {
+  class: zone-own
+  running: "ob sync --continuous\n(black box)" {class: ext}
+  record: "supervisor records\nexit code + reason" {class: own}
+  wait: "backoff 2 s, 4 s, 8 s ...\nup to OB_RESTART_BACKOFF_MAX\nexit 2 / 3: always max, state failed" {class: own}
+  respawn: "respawn ob" {class: own}
+  systemd: "systemd\nRestart=always, RestartSec=5" {class: infra}
+  running -> record: "exits / crashes" {class: flow}
+  record -> wait {class: flow}
+  wait -> respawn {class: flow}
+  respawn -> running: "stable 60 s: backoff reset" {class: loop}
+  systemd -> respawn: "Python process died: whole service restarts" {class: loop}
+}
+
+l2: "LOOP 2 · OAuth revalidation" {
+  class: zone-sec
+  req: "claude.ai request\nPOST /mcp + JWT\n(black box)" {class: ext}
+  cache: "GitHub answer cached\nless than 300 s ago?" {class: sec; shape: diamond}
+  gh: "GitHub GET /user\n(black box)" {class: ext}
+  check: "login in\nOAUTH_GITHUB_ALLOWED_LOGINS?" {class: sec}
+  req -> cache {class: flow}
+  cache -> gh: "no" {class: flow}
+  gh -> check: "login" {class: flow}
+  cache -> check: "yes" {class: flow}
+  check -> req: "allowed, or 401\n(revocation effective within ~5 min)" {class: loop}
+}
+
+l3: "LOOP 3 · two-way sync" {
+  class: zone-data
+  writes: "MCP write tools\nREQUIRE_WRITE_PRECONDITIONS" {class: sec}
+  vault: "vault on the VM" {class: data}
+  ob: "ob sync\n(black box)" {class: ext}
+  osync: "Obsidian Sync\n(black box)" {class: ext}
+  apps: "your Obsidian apps\n(black box)" {class: ext}
+  index: "MCP watcher + index\ninotify, reconcile every\nINDEX_RECONCILE_INTERVAL" {class: own}
+  writes -> vault: "writes" {class: flow}
+  vault -> ob: "local changes" {class: flow}
+  ob -> osync: "upload deltas" {class: flow}
+  osync -> apps: "download deltas" {class: flow}
+  apps -> osync: "your edits" {class: loop}
+  osync -> ob: "remote deltas" {class: loop}
+  ob -> vault: "writes files" {class: loop}
+  vault -> index: "inotify events" {class: loop}
+  index -> writes: "fresh revisions" {class: loop}
+}
+
+l4: "LOOP 4 · fail2ban bans" {
+  class: zone-sec
+  traffic: "client / attacker traffic\nPOST /register, GET /authorize, SSH\n(black box)" {class: ext}
+  logs: "Caddy access log\n+ sshd journal" {class: data}
+  count: "fail2ban, 10 min window\n> 20 register, > 60 authorize\n5 SSH failures" {class: sec}
+  ban: "iptables ban, 1 h" {class: sec}
+  traffic -> logs {class: flow}
+  logs -> count {class: flow}
+  count -> ban: "threshold exceeded" {class: flow}
+  ban -> traffic: "attacker traffic dropped" {class: loop}
+}
+
+l5: "LOOP 5 · OAuth store growth" {
+  class: zone-own
+  dcr: "Dynamic Client Registration\none record per client" {class: own}
+  store: "mcp-data/\nFASTMCP_HOME" {class: data}
+  timer: "oauth-usage timer, weekly\ndu vs 200 MB" {class: ops}
+  operator: "operator" {class: client}
+  dcr -> store: "writes" {class: flow}
+  store -> timer: "size" {class: flow}
+  timer -> operator: "journal warning" {class: loop}
+  operator -> dcr: "check fail2ban, clean up" {class: loop}
+}
+
+l6: "LOOP 6 · deploy health" {
+  class: zone-infra
+  update: "update.sh SHA" {class: ops}
+  health: "restart + poll\nGET /health for 60 s" {class: ops}
+  live: "live" {class: own}
+  operator: "operator" {class: client}
+  update -> health {class: flow}
+  health -> live: "OK" {class: flow}
+  health -> operator: "not OK: exit 1 + hint" {class: loop}
+  operator -> update: "update.sh rollback" {class: loop}
+}

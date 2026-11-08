@@ -1,0 +1,82 @@
+# System context: trust boundaries, flows and feedback loops.
+# Render: d2 --layout elk --pad 40 01-overview.d2 01-overview.svg
+...@_theme
+
+direction: down
+
+title: "obsidian-mcp on Oracle Cloud — system context" {
+  near: top-center
+  shape: text
+  style: {font-size: 22; font-color: "#e2e8f0"; font: mono; bold: true}
+}
+
+operator: "operator laptop\nSSH key" {class: client}
+
+internet: "INTERNET · untrusted · third-party black boxes" {
+  class: zone-net
+  claude: "claude.ai\nweb / mobile MCP client" {class: ext}
+  dns: "Cloudflare DNS\nA record, DNS only" {class: ext}
+  github: "GitHub\nOAuth + REST API" {class: ext}
+  le: "Let's Encrypt\nACME CA" {class: ext}
+  osync: "Obsidian Sync\nE2E-encrypted relay" {class: ext}
+  apps: "your Obsidian apps\ndesktop / mobile" {class: ext}
+}
+
+oci: "ORACLE CLOUD · eu-madrid-1" {
+  class: zone-infra
+  platform: "OCI platform\nhypervisor + network fabric" {class: ext}
+
+  vcn: "YOUR VCN obsidian-vcn · not versioned" {
+    class: zone-infra
+    seclist: "security list\nTCP 80/443 from anywhere\nTCP 22 from admin IP only" {class: infra}
+
+    vm: "VM · Ubuntu 24.04 ARM · Ampere A1 · hardened host" {
+      class: zone-sec
+      iptables: "iptables INPUT\nACCEPT 22, 80, 443\nbefore Oracle's REJECT" {class: sec}
+      sshd: "sshd\nkeys only, no root" {class: sec}
+      fail2ban: "fail2ban\nsshd + OAuth jails" {class: sec}
+      caddy: "Caddy :80 / :443\n(third-party proxy)" {class: ext}
+      systemd: "systemd\nRestart=always" {class: infra}
+
+      sandbox: "SYSTEMD SANDBOX · obsidian-mcp.service · User=obsidian" {
+        class: zone-own
+        mcp: "obsidian-remote-mcp\nFastMCP on 127.0.0.1:8000" {class: own}
+        ob: "ob sync --continuous\nObsidian Headless CLI" {class: ext}
+      }
+
+      disk: "FILES ON DISK" {
+        class: zone-data
+        vault: "vault/" {class: data}
+        mcpdata: "mcp-data/\nOAuth store, locks, audit" {class: data}
+        accesslog: "Caddy access log\nJSON lines" {class: data}
+      }
+    }
+  }
+}
+
+# ── flows ──────────────────────────────────────────────────────────────
+internet.claude -> internet.dns: "DNS lookup" {class: flow}
+internet.dns -> internet.claude: "VM public IP" {class: flow}
+internet.claude -> oci.platform: "HTTPS :443\nMCP JSON-RPC + OAuth" {class: main}
+operator -> oci.platform: "SSH :22" {class: flow}
+oci.platform -> oci.vcn.seclist: "TCP" {class: main}
+oci.vcn.seclist -> oci.vcn.vm.iptables: "allowed ports" {class: main}
+oci.vcn.vm.iptables -> oci.vcn.vm.caddy: "HTTPS" {class: main}
+oci.vcn.vm.iptables -> oci.vcn.vm.sshd: "SSH" {class: flow}
+oci.vcn.vm.caddy -> oci.vcn.vm.sandbox.mcp: "HTTP on loopback\nunbuffered stream, Server header stripped" {class: main}
+oci.vcn.vm.caddy <-> internet.le: "ACME challenge / certificate" {class: flow}
+oci.vcn.vm.sandbox.mcp <-> internet.github: "OAuth code exchange\nGET /user" {class: flow}
+oci.vcn.vm.sandbox.mcp -> oci.vcn.vm.disk.vault: "note reads / writes" {class: flow}
+oci.vcn.vm.sandbox.mcp -> oci.vcn.vm.disk.mcpdata: "OAuth clients + tokens, audit" {class: flow}
+oci.vcn.vm.sandbox.mcp -> oci.vcn.vm.sandbox.ob: "spawn: argv + minimal env" {class: flow}
+oci.vcn.vm.sandbox.ob <-> oci.vcn.vm.disk.vault: "vault files" {class: flow}
+oci.vcn.vm.sandbox.ob <-> internet.osync: "encrypted sync deltas\nHTTPS outbound" {class: flow}
+internet.osync <-> internet.apps: "sync deltas" {class: flow}
+oci.vcn.vm.caddy -> oci.vcn.vm.disk.accesslog: "one JSON line per request" {class: flow}
+
+# ── feedback loops ─────────────────────────────────────────────────────
+oci.vcn.vm.sandbox.ob -> oci.vcn.vm.sandbox.mcp: "stdout lines, exit code" {class: loop}
+oci.vcn.vm.disk.accesslog -> oci.vcn.vm.fail2ban: "OAuth endpoint hits" {class: loop}
+oci.vcn.vm.sshd -> oci.vcn.vm.fail2ban: "auth failures (journal)" {class: loop}
+oci.vcn.vm.fail2ban -> oci.vcn.vm.iptables: "ban rules, 1 h" {class: loop}
+oci.vcn.vm.systemd -> oci.vcn.vm.sandbox.mcp: "restart on crash" {class: loop}

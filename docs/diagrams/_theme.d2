@@ -1,0 +1,212 @@
+# Shared look for every deployment diagram (imported with `...@_theme`).
+# Dark, technical style: near-black canvas, monospace labels, thin bright
+# strokes colour-coded by category. Colours are baked in, so the SVGs look
+# the same on GitHub light and dark.
+#
+#   client   cyan    #22d3ee  you / your devices (operator, browser)
+#   own      emerald #34d399  your services and code
+#   data     violet  #a78bfa  data on disk
+#   infra    amber   #fbbf24  your cloud / host configuration
+#   sec      rose    #fb7185  your security controls
+#   ext      slate   #64748b  third-party black box: inputs/outputs only
+#   ops      sky     #38bdf8  deploy scripts and operator actions
+#
+#   flow     slate solid      data or control flow
+#   main     cyan, thick      main request path (HTTPS from claude.ai)
+#   loop     pink, dashed     feedback loop / return signal
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    pad: 40
+    theme-overrides: {
+      N1: "#e2e8f0"
+      N2: "#cbd5e1"
+      N3: "#94a3b8"
+      N4: "#475569"
+      N5: "#334155"
+      N6: "#1e293b"
+      N7: "#0b1120"
+      B1: "#22d3ee"
+      B2: "#334155"
+      B3: "#1e293b"
+      B4: "#111827"
+      B5: "#0f172a"
+      B6: "#0b1120"
+      AA2: "#34d399"
+      AA4: "#1e293b"
+      AA5: "#0f172a"
+      AB4: "#1e293b"
+      AB5: "#0f172a"
+    }
+  }
+}
+
+style: {
+  fill: "#0b1120"
+  fill-pattern: dots
+}
+
+classes: {
+  client: {
+    style: {
+      fill: "#082f3a"
+      stroke: "#22d3ee"
+      stroke-width: 2
+      font-color: "#a5f3fc"
+      font: mono
+      border-radius: 10
+      shadow: false
+    }
+  }
+  own: {
+    style: {
+      fill: "#052e22"
+      stroke: "#34d399"
+      stroke-width: 2
+      font-color: "#a7f3d0"
+      font: mono
+      border-radius: 10
+      shadow: false
+    }
+  }
+  data: {
+    shape: cylinder
+    style: {
+      fill: "#1e1b4b"
+      stroke: "#a78bfa"
+      stroke-width: 2
+      font-color: "#ddd6fe"
+      font: mono
+      shadow: false
+    }
+  }
+  infra: {
+    style: {
+      fill: "#2a1f05"
+      stroke: "#fbbf24"
+      stroke-width: 2
+      font-color: "#fde68a"
+      font: mono
+      border-radius: 10
+      shadow: false
+    }
+  }
+  sec: {
+    style: {
+      fill: "#3a0d16"
+      stroke: "#fb7185"
+      stroke-width: 2
+      font-color: "#fecdd3"
+      font: mono
+      border-radius: 10
+      shadow: false
+    }
+  }
+  ops: {
+    style: {
+      fill: "#0c2a40"
+      stroke: "#38bdf8"
+      stroke-width: 2
+      font-color: "#bae6fd"
+      font: mono
+      border-radius: 10
+      shadow: false
+    }
+  }
+  ext: {
+    style: {
+      fill: "#1e293b"
+      stroke: "#64748b"
+      stroke-width: 2
+      font-color: "#94a3b8"
+      font: mono
+      border-radius: 10
+      shadow: false
+    }
+  }
+
+  # Trust-boundary containers (dashed, transparent).
+  zone-net: {
+    style: {
+      fill: "#0b1120"
+      stroke: "#64748b"
+      stroke-dash: 4
+      stroke-width: 1
+      font-color: "#94a3b8"
+      font: mono
+      border-radius: 14
+    }
+  }
+  zone-infra: {
+    style: {
+      fill: "#0d1424"
+      stroke: "#fbbf24"
+      stroke-dash: 4
+      stroke-width: 1
+      font-color: "#fbbf24"
+      font: mono
+      border-radius: 14
+    }
+  }
+  zone-own: {
+    style: {
+      fill: "#0b1a1a"
+      stroke: "#34d399"
+      stroke-dash: 4
+      stroke-width: 1
+      font-color: "#34d399"
+      font: mono
+      border-radius: 14
+    }
+  }
+  zone-sec: {
+    style: {
+      fill: "#160d16"
+      stroke: "#fb7185"
+      stroke-dash: 4
+      stroke-width: 1
+      font-color: "#fb7185"
+      font: mono
+      border-radius: 14
+    }
+  }
+  zone-data: {
+    style: {
+      fill: "#110f24"
+      stroke: "#a78bfa"
+      stroke-dash: 4
+      stroke-width: 1
+      font-color: "#a78bfa"
+      font: mono
+      border-radius: 14
+    }
+  }
+
+  # Edges.
+  flow: {
+    style: {
+      stroke: "#64748b"
+      stroke-width: 1
+      font-color: "#cbd5e1"
+      font: mono
+    }
+  }
+  main: {
+    style: {
+      stroke: "#22d3ee"
+      stroke-width: 3
+      font-color: "#a5f3fc"
+      font: mono
+    }
+  }
+  loop: {
+    style: {
+      stroke: "#f472b6"
+      stroke-width: 2
+      stroke-dash: 4
+      font-color: "#fbcfe8"
+      font: mono
+    }
+  }
+}
