@@ -151,3 +151,13 @@ def test_main_fails_fast_on_multi_vault_without_ob_vault_path(monkeypatch, tmp_p
     with pytest.raises(ConfigError, match="OB_VAULT_PATH"):
         service_mod.start_ob()
     assert service_mod.get_service() is None
+
+
+@pytest.mark.parametrize("value", [" true ", "TRUE", "1\n", " yes", "0", "no", " ", "on"])
+async def test_enable_ob_parsing_matches_ob_flags(monkeypatch, value):
+    from obsidian_mcp.ob.settings import ObFlags
+
+    names = await _tool_names(monkeypatch, ENABLE_OB=value)
+    expected = ObFlags.from_env({"ENABLE_OB": value}).enable_ob
+    assert server_mod._ob_enabled is expected
+    assert (set(READ_ONLY_TOOLS) <= names) is expected

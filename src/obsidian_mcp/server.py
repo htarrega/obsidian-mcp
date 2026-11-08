@@ -860,7 +860,9 @@ _feature_flags = _FeatureFlags.from_env()
 
 # Optional Obsidian Headless (`ob`) sync tools — see obsidian_mcp/ob. The
 # package is imported only when ENABLE_OB is set; otherwise nothing changes.
-_ob_enabled = os.environ.get("ENABLE_OB", "false").lower() in ("1", "true", "yes")
+# Same rule as obsidian_mcp.ob.settings.ObFlags (whitespace-tolerant), kept
+# inline so the ob package is not imported when the flag is off.
+_ob_enabled = os.environ.get("ENABLE_OB", "false").strip().lower() in ("1", "true", "yes")
 if _ob_enabled:
     from .ob import register_ob_tools
 
