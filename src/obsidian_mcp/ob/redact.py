@@ -21,7 +21,11 @@ EMAIL_MASK = "[REDACTED_EMAIL]"
 # Environment variables whose *values* are masked verbatim wherever they appear.
 _SECRET_ENV_VARS = ("OBSIDIAN_AUTH_TOKEN",)
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
+# The lookbehind anchors matches at the start of a run, keeping the scan
+# linear on long runs without an '@' (output can be up to 256 KB).
+_EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+\-])[A-Za-z0-9._%+\-]{1,256}@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+"
+)
 _BEARER_RE = re.compile(r"(?i)\b(bearer)\s+[^\s\"',;]+")
 # ``name=value`` / ``name: value`` / ``"name": "value"`` for secret-looking names.
 _KEY_VALUE_RE = re.compile(
