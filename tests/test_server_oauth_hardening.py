@@ -12,6 +12,7 @@ _HARDENING_VARS = (
     "OAUTH_ENABLE_CIMD",
     "OAUTH_ALLOWED_CLIENT_REDIRECT_URIS",
     "OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS",
+    "OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS",
 )
 
 
@@ -54,6 +55,7 @@ def test_defaults_are_hardened(oauth_env):
         "http://127.0.0.1:*",
     ]
     assert kwargs["fastmcp_access_token_expiry_seconds"] == 30 * 24 * 3600
+    assert kwargs["fallback_refresh_token_expiry_seconds"] == 90 * 24 * 3600
     assert kwargs["require_authorization_consent"] is True
 
 
@@ -66,6 +68,7 @@ def test_provider_receives_settings(oauth_env):
     assert provider._cimd_manager is None
     assert provider._allowed_client_redirect_uris[0] == "https://claude.ai/api/mcp/auth_callback"
     assert provider._fastmcp_access_token_expiry_seconds == 30 * 24 * 3600
+    assert provider._fallback_refresh_token_expiry_seconds == 90 * 24 * 3600
     assert provider._require_authorization_consent is True
 
 
@@ -74,6 +77,7 @@ def test_env_overrides(oauth_env):
     oauth_env.setenv("OAUTH_ENABLE_CIMD", "true")
     oauth_env.setenv("OAUTH_ALLOWED_CLIENT_REDIRECT_URIS", "https://a.example/cb, http://localhost:*")
     oauth_env.setenv("OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS", "3600")
+    oauth_env.setenv("OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS", " 86400 ")
 
     kwargs = _captured_kwargs(oauth_env)
 
@@ -81,6 +85,7 @@ def test_env_overrides(oauth_env):
     assert kwargs["enable_cimd"] is True
     assert kwargs["allowed_client_redirect_uris"] == ["https://a.example/cb", "http://localhost:*"]
     assert kwargs["fastmcp_access_token_expiry_seconds"] == 3600
+    assert kwargs["fallback_refresh_token_expiry_seconds"] == 86400
 
 
 def test_blank_list_values_fall_back_to_defaults(oauth_env):
@@ -100,6 +105,9 @@ def test_blank_list_values_fall_back_to_defaults(oauth_env):
         ("OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS", "0"),
         ("OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS", "-5"),
         ("OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS", "soon"),
+        ("OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS", "0"),
+        ("OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS", "-1"),
+        ("OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS", "later"),
     ],
 )
 def test_invalid_values_raise(oauth_env, name, value):

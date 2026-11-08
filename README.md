@@ -86,6 +86,7 @@ Security settings (all optional, hardened defaults; details in
 | `OAUTH_ALLOWED_CLIENT_REDIRECT_URIS` | claude.ai / claude.com MCP callbacks, `http://localhost:*`, `http://127.0.0.1:*` |
 | `OAUTH_ENABLE_CIMD` | `false` |
 | `OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS` | `2592000` (30 days) |
+| `OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS` | `7776000` (90 days) |
 
 ## Usage with Claude Code / Desktop
 

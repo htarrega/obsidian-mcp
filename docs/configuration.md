@@ -99,6 +99,7 @@ All optional; the defaults are the hardened setting.
 | `OAUTH_ALLOWED_CLIENT_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback,http://localhost:*,http://127.0.0.1:*` | MCP client redirect URIs the OAuth server accepts (comma-separated; `*` matches any port, or any subdomain as `*.example.com`). Add your client's callback here if it is not claude.ai or a local tool. |
 | `OAUTH_ENABLE_CIMD` | `false` | Allow URL-based client IDs (Client ID Metadata Documents), which make the server fetch client-chosen URLs. |
 | `OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS` | `2592000` (30 days) | Lifetime of the access token the server issues to MCP clients after GitHub login. GitHub OAuth-app tokens never expire, so without this the token lived 1 year. |
+| `OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS` | `7776000` (90 days) | Lifetime of the refresh token the server issues to MCP clients. GitHub returns no refresh-token expiry, so without this it lived 1 year; after it expires the client has to log in again. |
 
 The `OAUTH_*` variables only apply when GitHub OAuth is configured (see
 [Remote Setup](remote-setup.md)). Invalid values stop the server at startup.

@@ -626,6 +626,9 @@ def _build_auth() -> AuthProvider | None:
             # GitHub OAuth-app tokens carry no expiry, so the issued FastMCP JWT
             # would otherwise live 1 year; this caps it.
             fastmcp_access_token_expiry_seconds=hardening.access_token_expiry_seconds,
+            # GitHub returns no refresh_expires_in, so FastMCP-issued refresh
+            # tokens would otherwise live 1 year (library default).
+            fallback_refresh_token_expiry_seconds=hardening.refresh_token_expiry_seconds,
             require_authorization_consent=True,
         )
         # Relies on OAuthProxy's private _token_validator attribute — the hook

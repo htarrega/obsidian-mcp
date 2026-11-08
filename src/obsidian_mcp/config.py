@@ -733,6 +733,7 @@ DEFAULT_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS = (
     "http://127.0.0.1:*",
 )
 DEFAULT_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS = 30 * 24 * 3600
+DEFAULT_OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS = 90 * 24 * 3600
 
 
 @dataclass(frozen=True)
@@ -741,6 +742,7 @@ class OAuthHardening:
     enable_cimd: bool
     allowed_client_redirect_uris: tuple[str, ...]
     access_token_expiry_seconds: int
+    refresh_token_expiry_seconds: int
 
 
 def oauth_hardening_from_env() -> OAuthHardening:
@@ -752,6 +754,9 @@ def oauth_hardening_from_env() -> OAuthHardening:
         ),
         access_token_expiry_seconds=_env_positive_int(
             "OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS", DEFAULT_OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS
+        ),
+        refresh_token_expiry_seconds=_env_positive_int(
+            "OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS", DEFAULT_OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS
         ),
     )
 
