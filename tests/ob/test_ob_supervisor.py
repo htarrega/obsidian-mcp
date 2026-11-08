@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 
@@ -148,3 +149,74 @@ def test_sync_child_does_not_inherit_server_secrets(fake_ob, ob_service, wait, m
     assert "OAUTH_GITHUB_CLIENT_SECRET" not in env and "API_KEY" not in env
     assert "PATH" in env
     svc.supervisor.stop()
+
+
+def test_overlong_line_is_truncated_and_its_tail_discarded(fake_ob, ob_service, wait, monkeypatch):
+    long_line = "x" * (supervisor_mod.MAX_LINE_BYTES * 3 + 7)
+    monkeypatch.setenv("FAKE_OB_SYNC_LINES", f"before\n{long_line}\nafter")
+    svc = ob_service()
+    wait(lambda: any(line.endswith(" after") for line in svc.supervisor.logs(50)))
+    logs = svc.supervisor.logs(50)
+    x_lines = [line for line in logs if "xxxx" in line]
+    assert len(x_lines) == 1  # tail chunks are not recorded as extra lines
+    assert x_lines[0].endswith("[line truncated]")
+    assert len(x_lines[0].split(" ", 1)[1]) == supervisor_mod.MAX_LINE_CHARS
+    assert any(line.endswith(" before") for line in logs)
+
+
+def test_pump_reads_bounded_chunks(fake_ob, monkeypatch):
+    """readline() is always called with a size limit."""
+    sizes: list[int] = []
+
+    class Stream:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        def readline(self, size=-1):
+            sizes.append(size)
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            pass
+
+    class Proc:
+        stdout = Stream([b"a" * 10, b"b\n", b"ok\n", b"partial at eof"])
+
+    sup = supervisor_mod.SyncSupervisor(["ob"], fake_ob.vault)
+    sup._pump(Proc())
+    assert sizes and all(size == supervisor_mod.MAX_LINE_BYTES for size in sizes)
+    lines = [line.split(" ", 1)[1] for line in sup.logs(10)]
+    assert lines == ["aaaaaaaaaa [line truncated]", "ok", "partial at eof [line truncated]"]
+
+
+def test_stuck_monitor_thread_reports_failed_and_blocks_start(fake_ob, wait, monkeypatch):
+    release = threading.Event()
+    sup = supervisor_mod.SyncSupervisor(
+        fake_ob.settings().sync_argv(), fake_ob.vault, stop_timeout=0.2
+    )
+    sup.join_grace = 0.1
+    real_pump = sup._pump
+
+    def stuck_pump(proc):
+        real_pump(proc)
+        release.wait(10)  # e.g. a grandchild keeping the pipe open
+
+    monkeypatch.setattr(sup, "_pump", stuck_pump)
+    sup.start()
+    try:
+        wait(lambda: fake_ob.live_sync_pids())
+        sup.stop()
+        status = sup.status()
+        assert status["state"] == "failed"
+        assert "monitor thread did not exit" in status["failure_reason"]
+        with pytest.raises(supervisor_mod.SupervisorBusyError, match="has not exited"):
+            sup.start()
+        assert sup.status()["state"] == "failed"
+    finally:
+        release.set()
+        sup._thread.join(timeout=5)
+    sup.start()  # once the old thread is gone, start works again
+    try:
+        assert sup.status()["state"] in ("starting", "running")
+    finally:
+        sup.stop()

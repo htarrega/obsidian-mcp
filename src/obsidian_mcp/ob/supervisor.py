@@ -40,7 +40,11 @@ from .runner import child_cwd, child_env, signal_process_group
 logger = logging.getLogger(__name__)
 
 MAX_LINE_CHARS = 4096
+# Bytes read per readline() call; longer lines are truncated and the rest of
+# the line is discarded, so one huge line cannot exhaust memory.
+MAX_LINE_BYTES = MAX_LINE_CHARS * 4
 MAX_ERRORS = 20
+_TRUNCATED = " [line truncated]"
 
 _ERROR_MARKERS = (
     "Sync error",
@@ -85,6 +89,8 @@ class SyncSupervisor:
         self.stop_timeout = stop_timeout
         self.restart_cooldown = restart_cooldown
         self.control_timeout = control_timeout
+        # Extra seconds to wait for the monitor thread after the child is gone.
+        self.join_grace = 5.0
 
         self._lock = threading.RLock()
         self._control = threading.Lock()  # serialises start/stop/restart callers
@@ -210,7 +216,20 @@ class SyncSupervisor:
 
     def _start_locked(self) -> None:
         if self._thread is not None and self._thread.is_alive():
-            return
+            if not self._stop_event.is_set():
+                return  # already running
+            # A previous stop could not reap the monitor thread; starting a
+            # second one could run two children, so refuse loudly instead of
+            # silently doing nothing.
+            message = (
+                "previous ob sync monitor thread has not exited yet; "
+                "cannot start a new sync process"
+            )
+            logger.error(message)
+            with self._lock:
+                self._state = "failed"
+                self._failure_reason = message
+            raise SupervisorBusyError(message)
         stop_event = threading.Event()
         with self._lock:
             self._stop_event = stop_event
@@ -240,15 +259,26 @@ class SyncSupervisor:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     logger.error("ob sync child %s did not die after SIGKILL", proc.pid)
+        stuck = False
         if thread is not None:
-            thread.join(timeout=self.stop_timeout + 5)
+            thread.join(timeout=self.stop_timeout + self.join_grace)
             if thread.is_alive():
-                logger.error("ob sync monitor thread did not exit")
+                stuck = True
             else:
                 self._thread = None
         with self._lock:
-            self._state = "stopped"
             self._next_restart_monotonic = None
+            if stuck:
+                self._state = "failed"
+                self._failure_reason = (
+                    "ob sync monitor thread did not exit after stop; "
+                    "restart the server if this persists"
+                )
+            else:
+                self._state = "stopped"
+        if stuck:
+            logger.error("ob sync monitor thread did not exit after stop")
+            self._record("[supervisor] monitor thread did not exit after stop")
 
     def _spawn(self, stop_event: threading.Event) -> subprocess.Popen[bytes] | None:
         with self._lock:
@@ -275,8 +305,10 @@ class SyncSupervisor:
         logger.info("Started ob sync --continuous (pid %s)", proc.pid)
         return proc
 
-    def _record(self, line: str) -> None:
-        line = redact(line.rstrip("\r\n"))[:MAX_LINE_CHARS]
+    def _record(self, line: str, *, truncated: bool = False) -> None:
+        line = redact(line.rstrip("\r\n"))
+        if truncated or len(line) > MAX_LINE_CHARS:
+            line = line[: MAX_LINE_CHARS - len(_TRUNCATED)] + _TRUNCATED
         stamped = f"{_now()} {line}"
         with self._lock:
             self._logs.append(stamped)
@@ -288,8 +320,15 @@ class SyncSupervisor:
 
     def _pump(self, proc: subprocess.Popen[bytes]) -> None:
         assert proc.stdout is not None
-        for raw in iter(proc.stdout.readline, b""):
-            self._record(raw[: MAX_LINE_CHARS * 4].decode("utf-8", errors="replace"))
+        discarding = False  # inside the tail of an over-long line
+        while True:
+            raw = proc.stdout.readline(MAX_LINE_BYTES)
+            if not raw:
+                break
+            complete = raw.endswith(b"\n")
+            if not discarding:
+                self._record(raw.decode("utf-8", errors="replace"), truncated=not complete)
+            discarding = not complete
         proc.stdout.close()
 
     def _wait_for_restart(
