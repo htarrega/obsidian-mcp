@@ -86,7 +86,8 @@ pública reservada se documenta en [`oci-resources.md`](oci-resources.md)
 | Python | 3.12 (último patch gestionado por uv; admite `3.12.x` exacto) | `PYTHON_VERSION` |
 | Dependencias Python | las de `uv.lock` (`uv sync --locked`) | commit desplegado |
 | obsidian-mcp | commit SHA de 40 hex (nunca rama/tag) | `COMMIT` / `--commit` |
-| Caddy | *se anota al desplegar* (resumen de `provision.sh`) — se puede fijar con `CADDY_VERSION` (versión apt) | `CADDY_VERSION` |
+| Caddy | `2.11.9` (apt, repo Cloudsmith `caddy/stable`; `latest` = sin fijar) | `CADDY_VERSION` / `--caddy-version` |
+| Claves APT | huellas fijadas en `provision.sh` (`CADDY_KEY_FPR`, `NODESOURCE_KEY_FPR`); se aborta si la clave descargada no coincide | `provision.sh` |
 
 ## Requisitos previos
 
@@ -147,7 +148,7 @@ logrotate de `sync.log`; jails de fail2ban `sshd` y de los endpoints OAuth
 sin autenticar (`POST /register`, `GET /authorize`, leídos del access log JSON
 de Caddy); timer semanal que avisa en el journal si `FASTMCP_HOME` supera
 200 MB (no borra nada). Al final imprime un resumen
-con versiones y commit — **anota la versión de Caddy** en la tabla de arriba.
+con versiones y commit.
 
 La primera vez el servicio **no arranca**: el env todavía tiene `RELLENAR`.
 
@@ -326,6 +327,23 @@ de versiones de Obsidian Sync a mano.
   presupuesto (p. ej. 1 €) para detectar cualquier recurso de pago por error.
 - Haz copia de `/etc/obsidian-mcp/env` y, si quieres conservar las sesiones
   OAuth, de `/var/lib/obsidian/mcp-data`. El vault se recupera de Obsidian Sync.
+
+## Pendiente (endurecimiento de la cadena de suministro)
+
+- **Huella de la clave de NodeSource**: NodeSource no la publica en su
+  documentación. `NODESOURCE_KEY_FPR` es la de la clave servida por
+  `deb.nodesource.com`, que coincide con la de `keyserver.ubuntu.com`
+  (2026-11-08). Confirmarla contra una fuente oficial si aparece. La de Caddy
+  está contrastada con la API de Cloudsmith.
+- **obsidian-headless (npm)**: `npm install -g obsidian-headless@x.y.z` fija la
+  versión pero no la integridad del tarball ni de sus dependencias
+  transitivas. Pendiente: instalar desde un `package-lock.json` versionado
+  aquí (`npm ci` en un prefijo propio) o comprobar `dist.integrity` (sha512) del
+  tarball antes de instalarlo.
+- **uv**: el instalador `https://astral.sh/uv/<versión>/install.sh` se ejecuta
+  sin comprobar checksum. Pendiente: descargar el binario
+  `uv-aarch64-unknown-linux-gnu.tar.gz` de la release de GitHub y verificar su
+  `.sha256` (o fijar el sha256 en `provision.sh`) antes de instalarlo.
 
 ## Problemas habituales
 

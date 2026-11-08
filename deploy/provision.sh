@@ -13,7 +13,7 @@
 #   --uv-version / UV_VERSION          uv version               (0.11.7)
 #   --python-version / PYTHON_VERSION  uv-managed CPython        (3.12; may be a full 3.12.x)
 #   --node-major / NODE_MAJOR          NodeSource major version (22)
-#   --caddy-version / CADDY_VERSION    apt version of caddy     (empty = newest in repo)
+#   --caddy-version / CADDY_VERSION    apt version of caddy     (2.11.9; "latest" = newest in repo)
 #   --acme-email / ACME_EMAIL          ACME account e-mail      (empty = none)
 #   --ssh-ports / SSH_ALLOWED_PORTS    comma-separated SSH ports kept open in
 #                                      iptables and watched by fail2ban (22)
@@ -35,7 +35,7 @@ OB_VERSION="${OB_VERSION:-0.0.14}"
 UV_VERSION="${UV_VERSION:-0.11.7}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
-CADDY_VERSION="${CADDY_VERSION:-}"
+CADDY_VERSION="${CADDY_VERSION:-2.11.9}"
 ACME_EMAIL="${ACME_EMAIL:-}"
 SSH_ALLOWED_PORTS="${SSH_ALLOWED_PORTS:-22}"
 SKIP_UPGRADE=0
@@ -53,6 +53,19 @@ ETC_DIR=/etc/obsidian-mcp
 ENV_FILE="$ETC_DIR/env"
 UNIT_NAME=obsidian-mcp.service
 CONSOLE_SCRIPT=obsidian-remote-mcp
+
+# Expected primary-key fingerprints of the APT repository signing keys. The
+# downloaded key is refused unless it is exactly this one key.
+# - Caddy (Cloudsmith caddy/stable): confirmed against Cloudsmith's repository
+#   metadata API (https://api.cloudsmith.io/v1/repos/caddy/stable/gpg/) and
+#   the key served at dl.cloudsmith.io, 2026-11-08.
+CADDY_KEY_FPR=65760C51EDEA2017CEA2CA15155B6D79CA56EA34
+# - NodeSource ("NSolid <nsolid-gpg@nodesource.com>", created 2016-05-23):
+#   TODO(security): NodeSource does not publish this fingerprint in its docs;
+#   the value is the key served at deb.nodesource.com and matches the copy on
+#   keyserver.ubuntu.com (2026-11-08). Re-confirm against an official
+#   NodeSource publication if one appears, and update it if they rotate keys.
+NODESOURCE_KEY_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
 
 export DEBIAN_FRONTEND=noninteractive
 APT_OPTS=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
@@ -101,6 +114,8 @@ validate() {
 	[[ $OB_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "OB_VERSION must be an exact x.y.z version"
 	[[ $UV_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "UV_VERSION must be an exact x.y.z version"
 	[[ $NODE_MAJOR =~ ^[0-9]+$ ]] || die "NODE_MAJOR must be a number"
+	[[ $CADDY_VERSION == latest || $CADDY_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.~+]+)?$ ]] \
+		|| die "CADDY_VERSION must be an exact apt version (e.g. 2.11.9) or 'latest'"
 	[[ -z $ACME_EMAIL || $ACME_EMAIL =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die "ACME_EMAIL looks invalid"
 	local f
 	for f in obsidian-mcp.service Caddyfile.template env.example sysctl-obsidian.conf \
@@ -222,28 +237,59 @@ step_user() {
 	install -d -o "$SVC_USER" -g "$SVC_USER" -m 0700 "$VAULT_DIR" "$MCP_DATA_DIR" "$XDG_DIR"
 }
 
+# Primary-key fingerprints in key file $1 (armored or binary), one per line.
+key_fingerprints() {
+	local gnupg_home
+	gnupg_home=$(mktemp -d)
+	GNUPGHOME=$gnupg_home gpg --batch --show-keys --with-colons "$1" 2>/dev/null \
+		| awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
+	rm -rf "$gnupg_home"
+}
+
+# Die unless key file $1 holds exactly one primary key with fingerprint $2.
+expect_key() {
+	local file=$1 expected=$2 name=$3 got
+	got=$(key_fingerprints "$file")
+	[[ $got == "$expected" ]] \
+		|| die "$name signing key fingerprint mismatch: got '${got//$'\n'/ }', expected $expected (refusing to trust $file)"
+	info "$name signing key $expected verified"
+}
+
+# Download the armored key at $1, verify it is $2, install it dearmored at $3.
+install_repo_key() {
+	local url=$1 expected=$2 dest=$3 name=$4 tmp
+	if [[ -s $dest ]]; then
+		expect_key "$dest" "$expected" "$name"
+		return
+	fi
+	tmp=$(mktemp)
+	curl -fsSL "$url" -o "$tmp"
+	expect_key "$tmp" "$expected" "$name"
+	gpg --dearmor --yes -o "$dest" "$tmp"
+	rm -f "$tmp"
+	chmod 0644 "$dest"
+}
+
 step_repos() {
 	log "APT repositories (NodeSource ${NODE_MAJOR}.x, Caddy stable)"
 	local arch
 	arch=$(dpkg --print-architecture)
 	install -d -m 0755 /etc/apt/keyrings
-	if [[ ! -s /etc/apt/keyrings/nodesource.gpg ]]; then
-		curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-			| gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
-	fi
+	install_repo_key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+		"$NODESOURCE_KEY_FPR" /etc/apt/keyrings/nodesource.gpg NodeSource
 	echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
 		>/etc/apt/sources.list.d/nodesource.list
 	# Prefer NodeSource's nodejs over Ubuntu's (18.x in noble).
 	printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' \
 		>/etc/apt/preferences.d/nodesource
 
-	if [[ ! -s /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]]; then
-		curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-			| gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-	fi
-	curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
-		-o /etc/apt/sources.list.d/caddy-stable.list
-	chmod 0644 /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+	install_repo_key https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+		"$CADDY_KEY_FPR" /usr/share/keyrings/caddy-stable-archive-keyring.gpg Caddy
+	# Written locally (same content as Cloudsmith's debian.deb.txt) instead of
+	# downloading a sources file that could point signed-by elsewhere.
+	echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+		>/etc/apt/sources.list.d/caddy-stable.list
+	chmod 0644 /etc/apt/sources.list.d/caddy-stable.list
 	apt-get update
 }
 
@@ -363,10 +409,12 @@ step_fail2ban() {
 
 step_caddy() {
 	log "Caddy"
-	if [[ -n $CADDY_VERSION ]]; then
-		apt_install "caddy=${CADDY_VERSION}"
-	else
+	if [[ $CADDY_VERSION == latest ]]; then
+		warn "CADDY_VERSION=latest: installing the newest caddy in the repo (unpinned)"
 		apt_install caddy
+	else
+		# --allow-downgrades: re-provisioning with an older pin must win.
+		apt_install --allow-downgrades "caddy=${CADDY_VERSION}"
 	fi
 	local tmp
 	tmp=$(mktemp)
