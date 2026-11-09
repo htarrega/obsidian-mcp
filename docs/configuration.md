@@ -85,6 +85,27 @@ of that.
 # MAX_ATTACHMENT_BYTES=26214400  # 25 MiB default, applies to MCP and HTTP writes
 ```
 
+## Tags
+
+```env
+# TAGS_SOURCE=both   # frontmatter | inline | both
+```
+
+Where tags come from, applied to `list_all_tags_tool`, the `tag` filters of
+search/query/tasks and `manage_tags_tool`:
+
+- `both` (default) — the frontmatter `tags` property plus inline `#tags`.
+- `frontmatter` — only the `tags` property. Use it when prose is full of
+  `#something` that is not meant as a tag (e.g. Slack `#channel` mentions);
+  `manage_tags_tool` then leaves inline text alone.
+- `inline` — only inline `#tags`; `manage_tags_tool` adds tags inline.
+
+Inline tags follow Obsidian's rules: `#` at the start of a line or after
+whitespace, Obsidian's tag characters (letters, digits, `_`, `-`, `/`), at
+least one non-digit, and never inside code, `%% comments %%`, wikilinks,
+Markdown links or URLs (so `…/pull/1#discussion_r123` or `#L79` fragments are
+ignored). Hex colors and hex identifiers (`#007AFF`, `#b7c3`) are skipped.
+
 ## Security hardening
 
 All optional; the defaults are the hardened setting.

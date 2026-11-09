@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `get_tasks_tool`: `limit` (default 100, max 1000), `offset`, `dedupe`,
+  `group_by`, `exclude_folders`, `path_glob`, `summary_only`; `meta` now
+  carries `total`, `returned`, `truncated` and `offset`.
+- `TAGS_SOURCE=frontmatter|inline|both` (default `both`).
+- `get_broken_links_tool` items carry `kind` and `suggestion`; ambiguous
+  names are reported in `meta.warnings`.
+
+### Fixed
+
+- Broken links: attachments and partial paths resolve by file name across
+  the whole vault, `[[Foo.excalidraw]]` resolves to `Foo.excalidraw.md`, and
+  links in fenced code (``` and ~~~), inline code, `%% comments %%` and
+  data such as `[[1,320,320,3]]` are ignored. `resolve_alias_tool` resolves
+  attachment names.
+- Tags: URL fragments, Markdown link targets, numeric-only tags (`#14/`), hex
+  colors and hex identifiers are no longer tags; `#` must follow whitespace
+  or start a line, so `[#todo]` is no longer a tag (Obsidian behaviour).
+- Tasks: `*`, `+` and numbered bullets and tasks inside callouts are parsed;
+  tasks in code blocks and comments are ignored.
+
 ## [2.1.2] - 2026-11-01
 
 ### Fixed

@@ -32,6 +32,25 @@ index of what exists and where to look for more.
 tools aren't just refused at call time, they're never registered, so they
 don't appear in a connected client's tool list at all.
 
+## Links, tags and tasks
+
+- `get_broken_links` resolves links like Obsidian: case-insensitive, an
+  attachment (`![[diagram.png]]`) or partial path (`[[images/diagram.png]]`)
+  matches by file name anywhere in the vault, `[[Foo.excalidraw]]` finds
+  `Foo.excalidraw.md`, and links inside code or `%% comments %%` or that are
+  really data (`[[1,320,320,3]]`) are ignored. Each item is
+  `{source, link, kind: note|attachment, suggestion}`; `meta.warnings` lists
+  bare names that match several files. `get_vault_stats` counts the same set,
+  and `resolve_alias` accepts attachment names too.
+- `get_tasks` is paged: `limit` (default 100, max 1000), `offset`, and
+  `meta.{total, returned, truncated, offset}`. `dedupe=true` collapses a task
+  repeated in one note (e.g. a daily worklog) into its last occurrence with
+  `occurrences`, `first_line`, `last_line`. Also: `group_by` (`none`/`source`),
+  `exclude_folders`, `path_glob`, `summary_only` (per-note open/done/total).
+  Bullets `-`, `*`, `+` and `1.`, nested or in callouts, are recognised.
+- Tag listing follows Obsidian's inline-tag rules and the `TAGS_SOURCE`
+  setting — see [Configuration](configuration.md#tags).
+
 ## MCP Resources
 
 - `vault://notes/{path}` — a note's content as a resource
