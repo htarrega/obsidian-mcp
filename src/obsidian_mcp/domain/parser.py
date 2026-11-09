@@ -207,7 +207,7 @@ def extract_callouts(body: str) -> list[Callout]:
     return callouts
 
 
-def _extract_task_markers(
+def extract_task_markers(
     text: str,
 ) -> tuple[str, str | None, str | None, str | None, str | None]:
     """Pull Tasks-plugin emoji markers (due/done-date/priority/recurrence) out
@@ -242,7 +242,7 @@ def extract_tasks(body: str, line_offset: int = 0) -> list[Task]:
     for m in _TASK_RE.finditer(mask_non_content(body)):
         line_num = body[: m.start()].count("\n") + 1 + line_offset
         done = m.group(1).lower() == "x"
-        text, due, recurrence, priority, done_date = _extract_task_markers(m.group(2).strip())
+        text, due, recurrence, priority, done_date = extract_task_markers(m.group(2).strip())
         tasks.append(
             Task(
                 text=text,

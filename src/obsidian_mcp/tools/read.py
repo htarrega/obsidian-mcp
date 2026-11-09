@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -53,6 +54,33 @@ def list_notes(folder: str = "", include_meta: bool = False) -> list:
             results.append(rel)
 
     return sorted(results, key=lambda x: x["path"] if isinstance(x, dict) else x)
+
+
+RECENT_NOTES_MAX_LIMIT = 200
+_RECENT_SKIP_ROOTS = (".obsidian", ".trash")
+
+
+def get_recent_notes(limit: int = 20, folder: str = "") -> list[dict]:
+    """Most recently modified notes first: [{path, mtime}] (mtime as ISO 8601
+    UTC). Skips .obsidian/, .trash/ and EXCLUDE_PATHS."""
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    limit = min(int(limit), RECENT_NOTES_MAX_LIMIT)
+    cfg = get_config()
+    storage = VaultStorage.from_config(cfg)
+    rows: list[tuple[float, str]] = []
+    for resolved in storage.list_files(folder):
+        rel = resolved.relative
+        if not rel.lower().endswith(".md"):
+            continue
+        if rel.split("/", 1)[0] in _RECENT_SKIP_ROOTS or _is_excluded(rel, cfg.exclude_paths):
+            continue
+        rows.append((resolved.stat_result.st_mtime, rel))
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    return [
+        {"path": rel, "mtime": datetime.fromtimestamp(mtime, UTC).isoformat(timespec="seconds")}
+        for mtime, rel in rows[:limit]
+    ]
 
 
 def read_note(path: str) -> dict:

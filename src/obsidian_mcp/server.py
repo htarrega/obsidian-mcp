@@ -95,6 +95,7 @@ from .tools.query import (
     get_backlinks,
     get_link_graph,
     get_orphans,
+    get_outgoing_links,
     get_periodic_note,
     get_tag_tree,
     get_tasks_page,
@@ -102,8 +103,16 @@ from .tools.query import (
     list_all_tags,
     query_notes,
     resolve_alias,
+    resolve_note_ref,
 )
-from .tools.read import get_note_outline, list_notes, read_note, render_note, search_notes
+from .tools.read import (
+    get_note_outline,
+    get_recent_notes,
+    list_notes,
+    read_note,
+    render_note,
+    search_notes,
+)
 from .tools.similarity import find_similar_notes
 from .tools.templates import create_from_template, list_templates_info
 from .tools.vault_layout import vault_conventions
@@ -117,7 +126,9 @@ from .tools.write import (
     patch_frontmatter_batch,
     patch_note,
     patch_note_text,
+    prepend_to_note,
     restore_note,
+    set_task_status,
     write_note,
 )
 
@@ -244,6 +255,8 @@ have to guess how a particular tool replies:
   context_lines)` — full-text search with snippets (default 2 per note, 1 line of context, merged
   windows); mode: exact|regex|fuzzy (exact/fuzzy ignore case and accents); field: None|'filename';
   combine with frontmatter_filter in one call
+- `get_outline_tool(path)` — headings with level and line; `get_outgoing_links_tool(path)` —
+  resolved/broken outgoing links; `get_recent_notes_tool(limit, folder)` — recently modified notes
 - `find_similar_notes_tool(text, limit, exclude_path, min_score)` — TF-IDF similarity search for
   duplicate prevention ("does this topic already exist under different wording?")
 - `lint_schema_tool()` — validate frontmatter against the enums declared in _AI_INSTRUCTIONS.md
@@ -261,6 +274,8 @@ have to guess how a particular tool replies:
 - `patch_note_text_tool(path, find, replace, mode, count, dry_run)` — find/replace anywhere in a
   note's body, no heading/block-ref anchor required
 - `append_to_note_tool(path, content, section, create)` — append to end or under a heading
+- `prepend_to_note_tool(path, content)` — insert at the top of the body
+- `set_task_status_tool(path, line, done, expected_text)` — check/uncheck one task line
 - `patch_frontmatter_tool(path | paths, updates, merge_arrays, dry_run)` — update YAML keys
   without touching the body; pass `paths=[...]` to apply the same updates to several
   notes in one call, which returns the batch envelope (check `data.summary.failed`)
@@ -911,34 +926,77 @@ def read_note_tool(
     depth: int = 1,
     vault: str | None = None,
 ) -> dict:
-    """Read one note at the level of detail you actually need.
+    """Read one note. `path` is a vault path ('Folder/Note.md') or a bare
+    note name ('Note', case-insensitive, resolved like a [[wikilink]]).
 
-    mode:
-    - 'full' (default) — data: {content, frontmatter, tags, aliases, wikilinks,
-      block_refs, callouts, tasks, inline_fields}.
-    - 'outline' — structure only, no body text: data: {headings, block_refs,
-      frontmatter_keys, tags, aliases, inline_fields, word_count, line_count}.
-      Use this on a large note when you only need its shape.
-    - 'rendered' — data: {rendered}, the note with all ![[embed]]
-      transclusions resolved inline.
+    mode: 'full' (default) — data: {content, frontmatter, tags, aliases,
+    wikilinks, block_refs, callouts, tasks, inline_fields} | 'outline' —
+    structure only (headings, block_refs, frontmatter_keys, word/line counts)
+    | 'rendered' — data.rendered with ![[embeds]] inlined (depth 0-2).
 
-    depth applies to mode='rendered' only: 0=raw, 1=one level of embeds
-    (default), 2=nested embeds.
-
-    The envelope's `revision` is the token to pass back as expected_revision
-    when writing (modes 'full' and 'outline'; a rendered read spans several
-    notes, so it pins nothing)."""
+    The envelope `path` is the resolved note; meta.resolved_from/candidates
+    appear when a name was resolved. `revision` (full/outline) is what to
+    pass as expected_revision when writing."""
+    if mode not in ("full", "outline", "rendered"):
+        raise ValueError(f"Unknown mode: {mode!r}; expected 'full', 'outline' or 'rendered'")
+    resolved, meta = _resolve_note(path)
+    meta["mode"] = mode
     if mode == "full":
-        return _read_envelope(path, read_note(path), meta={"mode": mode})
+        return _read_envelope(resolved, read_note(resolved), meta=meta)
     if mode == "outline":
-        return _read_envelope(path, get_note_outline(path), meta={"mode": mode})
-    if mode == "rendered":
-        return read_result(
-            path,
-            {"rendered": render_note(path, depth=depth)},
-            meta={"mode": mode, "depth": depth},
-        )
-    raise ValueError(f"Unknown mode: {mode!r}; expected 'full', 'outline' or 'rendered'")
+        return _read_envelope(resolved, get_note_outline(resolved), meta=meta)
+    meta["depth"] = depth
+    return read_result(resolved, {"rendered": render_note(resolved, depth=depth)}, meta=meta)
+
+
+def _resolve_note(ref: str) -> tuple[str, dict]:
+    """resolve_note_ref() plus the meta keys that say a name was resolved."""
+    resolved, others = resolve_note_ref(ref, _index)
+    meta: dict = {}
+    if resolved != ref.strip():
+        meta["resolved_from"] = ref
+    if others:
+        meta["candidates"] = others
+    return resolved, meta
+
+
+@mcp.tool()
+def get_outline_tool(path: str, vault: str | None = None) -> dict:
+    """Headings of one note: data.items [{level, text, line}] (1-based file
+    lines; headings inside code blocks are ignored). `path` may be a note
+    name, like read_note_tool. Cheaper than reading the whole note."""
+    resolved, meta = _resolve_note(path)
+    outline = get_note_outline(resolved)
+    return read_result(
+        resolved,
+        {"items": outline["headings"]},
+        revision=outline["revision"],
+        meta={**meta, "count": len(outline["headings"])},
+    )
+
+
+@mcp.tool()
+def get_outgoing_links_tool(path: str, vault: str | None = None) -> dict:
+    """Links going out of one note (wikilinks and ![[embeds]]), resolved like
+    Obsidian does. data.items: [{target, heading, embed, kind:
+    'note'|'attachment', resolved: path|null, count}]; resolved=null means
+    broken. meta: {count, resolved, unresolved}. `path` may be a note name."""
+    resolved, meta = _resolve_note(path)
+    items = get_outgoing_links(resolved, _index)
+    broken = sum(1 for item in items if item["resolved"] is None)
+    return read_result(
+        resolved,
+        {"items": items},
+        meta={**meta, "count": len(items), "resolved": len(items) - broken, "unresolved": broken},
+    )
+
+
+@mcp.tool()
+def get_recent_notes_tool(limit: int = 20, folder: str = "", vault: str | None = None) -> dict:
+    """Most recently modified notes first. data.items: [{path, mtime}] (ISO
+    8601 UTC). folder limits to one folder; limit 1-200 (default 20)."""
+    items = get_recent_notes(limit=limit, folder=folder)
+    return list_result(items, meta={"folder": folder} if folder else None)
 
 
 @mcp.tool()
@@ -1248,6 +1306,60 @@ def append_to_note_tool(
 
 @mcp.tool()
 @_mutation_boundary
+def prepend_to_note_tool(
+    path: str,
+    content: str,
+    create: bool = True,
+    expected_revision: str | None = None,
+    vault: str | None = None,
+) -> dict:
+    """Insert content at the top of a note's body — e.g. a new dated section
+    on a newest-on-top log. Goes after frontmatter (if any) and after a
+    leading '# Title' line (if any); otherwise at line 1. Content is inserted
+    verbatim (a trailing newline is added if missing). create=True creates
+    the note if missing."""
+    result = prepend_to_note(
+        path, content, create=create, index=_index, expected_revision=expected_revision
+    )
+    log_write("prepend_to_note_tool", result["path"], "prepended content")
+    return _write_envelope(result)
+
+
+@mcp.tool()
+@_mutation_boundary
+def set_task_status_tool(
+    path: str,
+    line: int,
+    done: bool,
+    expected_text: str,
+    expected_revision: str | None = None,
+    vault: str | None = None,
+) -> dict:
+    """Check (done=true) or uncheck one task, addressed by its 1-based file
+    `line` as returned by get_tasks_tool/read_note_tool. expected_text is the
+    task's text; the call is refused if that line is not a task or its text
+    differs (stale line number), so re-read and retry. Only the checkbox
+    changes. data: {line, text (updated line), done}; meta.action is
+    'task_updated' or 'unchanged'."""
+    result = set_task_status(
+        path,
+        line,
+        done,
+        expected_text,
+        index=_index,
+        expected_revision=expected_revision,
+    )
+    if result["status"] != "unchanged":
+        log_write(
+            "set_task_status_tool",
+            result["path"],
+            f"line {line} marked {'done' if done else 'open'}",
+        )
+    return _write_envelope(result)
+
+
+@mcp.tool()
+@_mutation_boundary
 def patch_frontmatter_tool(
     path: str | None = None,
     updates: dict | None = None,
@@ -1346,9 +1458,14 @@ if _feature_flags.enable_move:
 
 @mcp.tool()
 def get_backlinks_tool(path: str, vault: str | None = None) -> dict:
-    """Return all notes that link to the given note (alias-aware).
-    data.items is a list of note paths."""
-    return list_result(get_backlinks(path, _index))
+    """Notes that link to the given note (alias-aware). `path` may be a note
+    name, like read_note_tool. data.items is a list of note paths."""
+    try:
+        resolved, meta = _resolve_note(path)
+    except FileNotFoundError:
+        # Links to a note that does not exist (yet) still have sources.
+        resolved, meta = path, {}
+    return list_result(get_backlinks(resolved, _index), meta=meta or None)
 
 
 @mcp.tool()
