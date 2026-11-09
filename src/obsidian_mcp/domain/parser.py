@@ -63,9 +63,11 @@ _INLINE_TAG_RE = re.compile(r"(?:(?<=\s)|^)#([\w/-]+)", re.MULTILINE)
 # Obsidian doesn't treat "#1" or "#2024" as tags ("see point #9").
 _NUMERIC_TAG_RE = re.compile(r"^[\d/]+$")
 
-# CSS-style hex colors (#fff, #007AFF, #2147B1cc). Only filtered when they
-# hold at least one digit, so real words such as #add or #facade survive.
-_HEX_COLOR_RE = re.compile(r"^(?=[^\d]*\d)(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+# Hex colors (#007AFF, #2147B1cc, #a1b) and hex identifiers such as commit or
+# UUID fragments (#b7c3, #6e4c0f44-26e3): only hex digits (optionally in
+# "-"-separated groups) with at least one digit AND one letter, so real words
+# (#add, #facade) and numeric-ish tags (#2024-01) survive.
+_HEX_LIKE_RE = re.compile(r"^(?=.*\d)(?=.*[a-fA-F])[0-9a-fA-F]+(?:-[0-9a-fA-F]+)*$")
 
 
 def _default_tags_source() -> str:
@@ -113,8 +115,8 @@ def extract_aliases(fm: dict) -> list[str]:
 
 def is_valid_inline_tag(tag: str) -> bool:
     """Obsidian-style validity for the text after "#": not purely numeric
-    and not a hex color code."""
-    return bool(tag) and not _NUMERIC_TAG_RE.match(tag) and not _HEX_COLOR_RE.match(tag)
+    and not a hex color code or hex identifier."""
+    return bool(tag) and not _NUMERIC_TAG_RE.match(tag) and not _HEX_LIKE_RE.match(tag)
 
 
 def extract_inline_tags(body: str) -> list[str]:

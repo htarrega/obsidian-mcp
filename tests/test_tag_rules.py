@@ -27,17 +27,17 @@ def test_url_and_markdown_link_fragments_are_not_tags(text):
     assert extract_inline_tags(f"see {text} here") == []
 
 
-@pytest.mark.parametrize("color", ["#007AFF", "#2147B1", "#fff0", "#a1b", "#2147B1cc"])
-def test_hex_colors_with_digits_are_not_tags(color):
-    tags = extract_inline_tags(f"color {color} used")
-    if len(color) - 1 in (3, 6, 8):
-        assert tags == []
-    else:
-        assert tags == [color[1:]]  # 4 hex digits is not a color code
+@pytest.mark.parametrize(
+    "token", ["#007AFF", "#2147B1", "#a1b", "#2147B1cc", "#b7c3", "#6e4c0f44-26e3"]
+)
+def test_hex_colors_and_hex_ids_are_not_tags(token):
+    assert extract_inline_tags(f"value {token}, used") == []
 
 
-def test_hex_lookalike_words_without_digits_stay_tags():
-    assert extract_inline_tags("#add #facade #bee") == ["add", "facade", "bee"]
+def test_hex_lookalike_words_and_dates_stay_tags():
+    assert extract_inline_tags("#add #facade #bee #2024-01 #v2") == [
+        "add", "facade", "bee", "2024-01", "v2",
+    ]
 
 
 @pytest.mark.parametrize("text", ["#14/", "#155/", "#192/ x", "#2024", "#1/2"])
