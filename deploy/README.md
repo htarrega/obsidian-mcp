@@ -48,6 +48,9 @@ process (which shuts `ob` down), and anything still alive after 30 s gets SIGKIL
 | `/opt/obsidian-mcp/app` | root, 0755 | `git clone` at a specific commit (detached) + `.venv` |
 | `/opt/obsidian-mcp/python` | root, 0755 | CPython managed by uv (`UV_PYTHON_INSTALL_DIR`) |
 | `/opt/obsidian-mcp/DEPLOYED_COMMIT`, `PREVIOUS_COMMIT` | root | active and previous commit (rollback) |
+| `/opt/obsidian-headless` | root, 0755 (read-only for everyone else) | `ob` installed with `npm ci` from `ob-headless/package-lock.json`; `.provision-stamp` = lock sha256 + Node ABI |
+| `/usr/bin/ob` | root, symlink | → `/opt/obsidian-headless/node_modules/.bin/ob` (the `OB_BIN` default) |
+| `/usr/local/bin/uv`, `uvx` | root, 0755 | uv from the sha256-pinned release tarball |
 | `/etc/obsidian-mcp/env` | root:root 0600 (directory root:root 0700) | configuration and secrets (`EnvironmentFile`) |
 | `/var/lib/obsidian` | obsidian 0750 | HOME of the `obsidian` user (shell `nologin`) |
 | `/var/lib/obsidian/vault` | obsidian 0700 | the synced vault |
@@ -60,6 +63,7 @@ process (which shuts `ob` down), and anything still alive after 30 s gets SIGKIL
 |---|---|
 | `provision.sh` | run once (idempotent, safe to re-run) |
 | `update.sh` | deploy another commit / `rollback` |
+| `ob-headless/package.json`, `package-lock.json` | `/opt/obsidian-headless` (`npm ci`, see [Bumping `ob`](#bumping-ob-obsidian-headless)) |
 | `obsidian-mcp.service` | `/etc/systemd/system/obsidian-mcp.service` |
 | `env.example` | `/etc/obsidian-mcp/env` (only if it does not exist) |
 | `Caddyfile.template` | `/etc/caddy/Caddyfile` (rendered with `DOMAIN`) |
@@ -82,9 +86,9 @@ reserved public IP is documented in [`oci-resources.md`](oci-resources.md)
 
 | Component | Version | Where it is pinned |
 |---|---|---|
-| obsidian-headless (`ob`) | `0.0.14` | `OB_VERSION` / `--ob-version` |
+| obsidian-headless (`ob`) + its dependencies | `0.0.14`, every package with its sha512 `integrity` | `ob-headless/package.json` + `ob-headless/package-lock.json` (`OB_VERSION` / `--ob-version` only asserts the locked version) |
 | Node.js | 22.x LTS (NodeSource, arm64) | `NODE_MAJOR` / `--node-major` |
-| uv | `0.11.7` | `UV_VERSION` / `--uv-version` |
+| uv | `0.11.7`, release tarball sha256 per arch | `UV_VERSION` / `--uv-version`; hashes in `uv_pinned_sha256()` in `provision.sh` (`UV_SHA256` / `--uv-sha256` for an unpinned version) |
 | Python | 3.12 (latest patch managed by uv; an exact `3.12.x` is accepted) | `PYTHON_VERSION` |
 | Python dependencies | those in `uv.lock` (`uv sync --locked`) | deployed commit |
 | obsidian-mcp | 40-hex commit SHA (never a branch/tag) | `COMMIT` / `--commit` |
@@ -142,7 +146,10 @@ What it does (idempotent): `apt upgrade`; base packages; unattended-upgrades;
 password-less `sshd` (verified with `sshd -T`); iptables rules for 80/443 (and
 the SSH ports) inserted **before** Oracle's `REJECT` and saved with
 `netfilter-persistent`; inotify limits; the `obsidian` user and directories; Node
-22 + `obsidian-headless@0.0.14`; uv + CPython in `/opt/obsidian-mcp/python`;
+22 + `obsidian-headless@0.0.14` (`npm ci` from the committed lock, built as
+the unprivileged `obhbuild` user, installed root-owned in
+`/opt/obsidian-headless`, `/usr/bin/ob` symlinked to it); uv from its
+sha256-pinned release tarball + CPython in `/opt/obsidian-mcp/python`;
 repo clone at the requested commit + `uv sync --locked --no-dev`;
 `/etc/obsidian-mcp/env` from `env.example` (only if it does not exist); systemd
 unit enabled; Caddy from the official repo (Cloudsmith) with `caddy validate`;
@@ -287,7 +294,63 @@ the Node/uv versions change: copy the new `deploy/` over and re-run
 `/etc/obsidian-mcp/env`). If `uv sync` fails, `update.sh` restores the previous
 commit before exiting.
 
-Changing `ob`: pass `--ob-version x.y.z` to `provision.sh` and restart the service.
+### Bumping `ob` (obsidian-headless)
+
+The version and every transitive dependency come from
+`deploy/ob-headless/package-lock.json`; nothing is resolved on the VM.
+
+1. On your machine, set the new exact version in
+   `deploy/ob-headless/package.json` (`"obsidian-headless": "x.y.z"`, no `^`/`~`).
+2. Regenerate the lock without running any install script:
+
+   ```bash
+   cd deploy/ob-headless
+   rm -f package-lock.json
+   npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+   ```
+
+3. Review the diff of `package-lock.json`: every package must have a
+   `resolved` URL on `registry.npmjs.org` and a `sha512-` `integrity`; check
+   which packages have `hasInstallScript` (today only `better-sqlite3`), since
+   those run during the build. Commit both files.
+4. Copy the new `deploy/` to the VM and re-run `provision.sh --commit <sha>
+   --skip-upgrade`. The lock digest changed, so it rebuilds `/opt/obsidian-headless`
+   (a few minutes: better-sqlite3 is compiled), relinks `/usr/bin/ob` and
+   restarts the service.
+
+How it is built: `npm ci --omit=dev` verifies every tarball against the lock
+and runs as the system user `obhbuild` (`setpriv --no-new-privs`, empty
+environment) in a throwaway `/var/tmp/obh-build.*` directory. Install scripts
+are allowed only in that unprivileged build, because better-sqlite3 needs one;
+it is compiled from its integrity-checked sources with node-gyp
+(`npm_config_build_from_source=true`, using the headers in `/usr/include/node`
+when the nodejs package ships them, otherwise node-gyp downloads them from
+nodejs.org and checks them against its `SHASUMS256.txt`) rather than
+downloading an unverified prebuilt binary. After a smoke test (load
+better-sqlite3, `ob --version`), the tree is copied to `/opt/obsidian-headless`
+owned by `root:root` and not writable by anyone else, so neither `obhbuild` nor
+the `obsidian` service user can alter `ob`. On re-provision, a leftover global
+`npm install -g obsidian-headless` is uninstalled.
+
+### Bumping uv
+
+`provision.sh` downloads
+`https://github.com/astral-sh/uv/releases/download/<version>/uv-<arch>-unknown-linux-gnu.tar.gz`
+and refuses it unless its sha256 matches the value pinned in
+`uv_pinned_sha256()` (aarch64 and x86_64). To bump:
+
+1. Get the digests of the new release, e.g.
+   `gh release view -R astral-sh/uv <version> --json assets --jq '.assets[] | select(.name | test("^uv-(aarch64|x86_64)-unknown-linux-gnu.tar.gz$")) | "\(.name) \(.digest)"'`,
+   and cross-check them with the release's `.sha256` files (or a local
+   `sha256sum` of the tarballs).
+2. Add `<version>/aarch64` and `<version>/x86_64` lines to `uv_pinned_sha256()`
+   and change the `UV_VERSION` default in `provision.sh`.
+3. Re-run `provision.sh` on the VM.
+
+For a one-off version without editing the script, pass both
+`--uv-version <version> --uv-sha256 <hex>`; without a pinned or explicit hash
+`provision.sh` aborts, and an explicit hash that contradicts a pinned one is
+refused.
 
 ## Policy settings
 
@@ -341,15 +404,11 @@ Obsidian Sync version history at hand.
   `deb.nodesource.com`, which matches the one on `keyserver.ubuntu.com`
   (2026-11-08). Confirm it against an official source if one appears. The Caddy
   fingerprint has been checked against the Cloudsmith API.
-- **obsidian-headless (npm)**: `npm install -g obsidian-headless@x.y.z` pins the
-  version but not the integrity of the tarball or its transitive dependencies.
-  Pending: install from a `package-lock.json` versioned here (`npm ci` into a
-  dedicated prefix) or check the tarball's `dist.integrity` (sha512) before
-  installing it.
-- **uv**: the installer `https://astral.sh/uv/<version>/install.sh` runs
-  without a checksum check. Pending: download the
-  `uv-aarch64-unknown-linux-gnu.tar.gz` binary from the GitHub release and
-  verify its `.sha256` (or pin the sha256 in `provision.sh`) before installing it.
+
+Done: `ob` and its dependencies are installed with `npm ci` from a committed,
+integrity-pinned `package-lock.json` in an unprivileged build, and uv is
+installed from its release tarball with a pinned sha256 (see
+[Bumping `ob`](#bumping-ob-obsidian-headless) and [Bumping uv](#bumping-uv)).
 
 ## Troubleshooting
 
@@ -357,10 +416,14 @@ Obsidian Sync version history at hand.
   missing from the Security List or iptables (`sudo iptables -L INPUT -n --line-numbers`).
 - **`ob` fails with ENOSPC / does not detect changes**: inotify limits (`sysctl
   fs.inotify.max_user_watches`).
-- **`npm install -g obsidian-headless` fails compiling `better-sqlite3`**:
-  `build-essential`/`python3` are missing (`provision.sh` installs them); check
-  the node-gyp output.
-- **`ob` is not at `/usr/bin/ob`**: `provision.sh` warns about it; set `OB_BIN`
-  in the env file.
+- **`npm ci` fails compiling `better-sqlite3`**: `build-essential`/`python3`
+  are missing (`provision.sh` installs them); the build directory
+  `/var/tmp/obh-build.*` is kept for inspection (delete it afterwards).
+- **`ob` version or lock mismatch**: `provision.sh` aborts if `--ob-version`
+  differs from the version in `ob-headless/package-lock.json`, or if `npm ci`
+  finds the lock out of sync with `package.json`; regenerate the lock (see
+  [Bumping `ob`](#bumping-ob-obsidian-headless)).
+- **uv sha256 mismatch**: the downloaded tarball is not the pinned one; do not
+  override it without checking the release's `.sha256` files.
 - **The service restarts in a loop**: `journalctl -u obsidian-mcp -n 200`;
   usually a `ConfigError` (misspelled variable) or the vault not configured in `ob`.
