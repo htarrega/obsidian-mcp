@@ -140,11 +140,12 @@ def get_vault_stats(index: VaultIndex) -> dict:
     orphans = get_orphans(index)
     broken = get_broken_links(index)
 
-    # Most linked = notes with most backlinks
+    # Most linked = notes with most (visible) backlinks. Each entry carries its
+    # count so numbered names like "(300) Permanent" are not read as counters.
+    backlink_counts = {p: len(scope.filter(index.get_backlinks(p))) for p in all_notes}
     by_backlinks = sorted(
-        all_notes,
-        key=lambda p: len(scope.filter(index.get_backlinks(p))),
-        reverse=True,
+        (p for p, n in backlink_counts.items() if n > 0),
+        key=lambda p: (-backlink_counts[p], p),
     )
 
     return {
@@ -152,7 +153,9 @@ def get_vault_stats(index: VaultIndex) -> dict:
         "total_links": total_links,
         "orphans_count": len(orphans),
         "broken_links_count": len(broken),
-        "most_linked": by_backlinks[:5],
+        "most_linked": [
+            {"path": p, "backlinks": backlink_counts[p]} for p in by_backlinks[:5]
+        ],
         "index_ready": index.is_ready(),
     }
 

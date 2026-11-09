@@ -103,6 +103,23 @@ def test_vault_stats(vault_factory):
     assert stats["index_ready"] is True
 
 
+def test_vault_stats_most_linked_reports_backlink_counts(vault_factory):
+    idx = vault_factory({
+        "(300) Permanent/hub.md": "x",
+        "a.md": "[[hub]]",
+        "b.md": "[[hub]] [[a]]",
+        "c.md": "[[hub]]",
+        "lonely.md": "no links",
+    })
+    most = get_vault_stats(idx)["most_linked"]
+    assert most[0] == {"path": "(300) Permanent/hub.md", "backlinks": 3}
+    assert {"path": "a.md", "backlinks": 1} in most
+    # Notes without backlinks are not "most linked".
+    assert all(entry["backlinks"] > 0 for entry in most)
+    assert "lonely.md" not in [entry["path"] for entry in most]
+    assert len(most) <= 5
+
+
 # ── get_tasks ─────────────────────────────────────────────────────────────
 
 def test_get_tasks_open(vault_factory):

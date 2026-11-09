@@ -297,7 +297,7 @@ renames, and `ENABLE_BULK_REPLACE` registers bulk replacement.
 - `get_audit_log_tool(path, tool, since, limit)` — write-action audit trail
   (what changed, when, with which tool), most recent first; pass `path=` to
   get the history of one note
-- `get_vault_stats_tool()` — note/link counts, orphans, most-linked notes
+- `get_vault_stats_tool()` — note/link counts, orphans, most_linked: [{path, backlinks}]
 - `get_tasks_tool(status, folder, tag)` — tasks across vault; status: open|done|all
 - `list_all_tags_tool(sort_by, mode)` — every tag; mode: 'flat' (default,
   with counts) | 'tree' (nested by slash hierarchy). To list the notes
@@ -1448,7 +1448,8 @@ def get_link_graph_tool(
 @mcp.tool()
 def get_vault_stats_tool(vault: str | None = None) -> dict:
     """Return vault statistics: note count, link count, orphans, broken links,
-    most-linked notes. Vault-wide, so the envelope carries no `path`."""
+    most_linked: top 5 [{path, backlinks}] (notes with >=1 backlink).
+    Vault-wide, so the envelope carries no `path`."""
     return read_result(None, get_vault_stats(_index))
 
 
