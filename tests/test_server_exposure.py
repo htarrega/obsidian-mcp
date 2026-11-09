@@ -213,3 +213,33 @@ async def test_resources_can_be_disabled(monkeypatch):
 def test_invalid_boolean_fails_loudly(monkeypatch):
     with pytest.raises(cfg_mod.ConfigError, match="ENABLE_PROMPTS"):
         _reload(monkeypatch, ENABLE_PROMPTS="maybe")
+
+
+def _deploy_env() -> dict[str, str]:
+    from pathlib import Path
+
+    env: dict[str, str] = {}
+    path = Path(__file__).resolve().parents[1] / "deploy" / "env.example"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            env[key] = value.strip().strip('"')
+    return env
+
+
+async def test_deploy_allowlist_names_only_real_tools(monkeypatch):
+    deploy = _deploy_env()
+    server = _reload(
+        monkeypatch,
+        ENABLE_OB=deploy["ENABLE_OB"],
+        ENABLE_OB_OPS=deploy["ENABLE_OB_OPS"],
+        TOOLS_ALLOWLIST=deploy["TOOLS_ALLOWLIST"],
+        ENABLE_PROMPTS=deploy["ENABLE_PROMPTS"],
+        ENABLE_RESOURCES=deploy["ENABLE_RESOURCES"],
+    )
+    tools, prompts, resources = await _surface(server)
+
+    assert server._exposure["unknown_allowlist"] == []
+    assert tools == set(deploy["TOOLS_ALLOWLIST"].split(","))
+    assert 18 <= len(tools) <= 24
+    assert prompts == set() and resources == set()
