@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import hmac
 import logging
 import mimetypes
@@ -23,6 +25,7 @@ from starlette.responses import JSONResponse, Response
 
 from .config import (
     ConfigError,
+    _env_bool,
     get_config,
     load_vaults_file,
     mask_error_details_from_env,
@@ -2442,6 +2445,108 @@ def vault_stats_resource() -> dict:
 def vault_tags_resource() -> list:
     """All tags in the vault with note counts, sorted by frequency."""
     return list_all_tags(_index, sort_by="count")
+
+
+# ── Exposure filters ──────────────────────────────────────────────────────────
+# Applied last, after every registration above (including register_ob_tools),
+# so an operator can trim the advertised surface without touching the
+# ENABLE_* groups: TOOLS_ALLOWLIST keeps only the named tools, TOOLS_DENYLIST
+# then removes more, ENABLE_PROMPTS / ENABLE_RESOURCES drop the generic
+# prompts and vault:// resources. Removed components are unregistered, so they
+# can be neither listed nor called. Runtime services (index, watcher, the ob
+# supervisor) do not depend on which tools are exposed.
+
+@dataclass(frozen=True)
+class _ExposureSettings:
+    allowlist: frozenset[str] | None
+    denylist: frozenset[str]
+    enable_prompts: bool
+    enable_resources: bool
+
+    @classmethod
+    def from_env(cls) -> _ExposureSettings:
+        def names(variable: str) -> frozenset[str] | None:
+            raw = os.environ.get(variable, "")
+            if not raw.strip():
+                return None
+            return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+        return cls(
+            allowlist=names("TOOLS_ALLOWLIST"),
+            denylist=names("TOOLS_DENYLIST") or frozenset(),
+            enable_prompts=_env_bool("ENABLE_PROMPTS", True),
+            enable_resources=_env_bool("ENABLE_RESOURCES", True),
+        )
+
+
+def _run_provider_call(factory):
+    """Run a provider coroutine from synchronous module code, also when an
+    event loop is already running (tests reload this module from async
+    tests). Listing the local provider is pure in-memory work."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(factory())).result()
+
+
+def _apply_exposure_filters(server: FastMCP, settings: _ExposureSettings) -> dict:
+    """Unregister tools/prompts/resources per ``settings``. Returns what was
+    removed plus allowlist/denylist names that match no registered tool
+    (logged as a warning, never fatal: a typo must not take the server down)."""
+    provider = server.local_provider
+    registered = {tool.name for tool in _run_provider_call(provider.list_tools)}
+    removed: set[str] = set()
+    if settings.allowlist is not None:
+        removed |= registered - settings.allowlist
+    removed |= registered & settings.denylist
+    for name in sorted(removed):
+        provider.remove_tool(name)
+
+    unknown_allowed = sorted((settings.allowlist or frozenset()) - registered)
+    unknown_denied = sorted(settings.denylist - registered)
+    if unknown_allowed:
+        logger.warning(
+            "TOOLS_ALLOWLIST names unknown or disabled tool(s): %s", ", ".join(unknown_allowed)
+        )
+    if unknown_denied:
+        logger.warning(
+            "TOOLS_DENYLIST names unknown or disabled tool(s): %s", ", ".join(unknown_denied)
+        )
+
+    removed_prompts: list[str] = []
+    if not settings.enable_prompts:
+        for prompt in _run_provider_call(provider.list_prompts):
+            provider.remove_prompt(prompt.name)
+            removed_prompts.append(prompt.name)
+    removed_resources: list[str] = []
+    if not settings.enable_resources:
+        for resource in _run_provider_call(provider.list_resources):
+            provider.remove_resource(str(resource.uri))
+            removed_resources.append(str(resource.uri))
+        for template in _run_provider_call(provider.list_resource_templates):
+            provider.remove_template(template.uri_template)
+            removed_resources.append(template.uri_template)
+
+    if removed or removed_prompts or removed_resources:
+        logger.info(
+            "Exposure filters: %d tool(s) exposed, %d hidden; prompts %s; resources %s",
+            len(registered - removed),
+            len(removed),
+            "off" if not settings.enable_prompts else "on",
+            "off" if not settings.enable_resources else "on",
+        )
+    return {
+        "removed_tools": sorted(removed),
+        "unknown_allowlist": unknown_allowed,
+        "unknown_denylist": unknown_denied,
+        "removed_prompts": removed_prompts,
+        "removed_resources": removed_resources,
+    }
+
+
+_exposure = _apply_exposure_filters(mcp, _ExposureSettings.from_env())
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────

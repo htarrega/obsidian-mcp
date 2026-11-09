@@ -13,7 +13,7 @@ from obsidian_mcp.ob import service as service_mod
 from obsidian_mcp.ob.tools import ADMIN_TOOLS, OPS_TOOLS, READ_ONLY_TOOLS
 
 ALL_OB_TOOLS = set(READ_ONLY_TOOLS) | set(OPS_TOOLS) | set(ADMIN_TOOLS)
-_ENV = ("ENABLE_OB", "ENABLE_OB_OPS", "ENABLE_OB_ADMIN", "READ_ONLY")
+_ENV = ("ENABLE_OB", "ENABLE_OB_OPS", "ENABLE_OB_ADMIN", "READ_ONLY", "TOOLS_ALLOWLIST")
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +137,27 @@ def test_main_starts_supervisor_and_stop_ob_terminates(fake_ob, monkeypatch, wai
         service_mod.stop_ob()
         assert fake_ob.live_sync_pids() == []
         assert svc.supervisor.status()["state"] == "stopped"
+    finally:
+        service_mod.stop_ob()
+        service_mod.set_service(None)
+
+
+async def test_main_starts_supervisor_even_when_every_ob_tool_is_hidden(
+    fake_ob, monkeypatch, wait
+):
+    try:
+        seen = _run_main(
+            monkeypatch,
+            fake_ob.vault,
+            ENABLE_OB="true",
+            ENABLE_OB_OPS="true",
+            OB_BIN=str(fake_ob.bin),
+            TOOLS_ALLOWLIST="read_note_tool",
+        )
+        names = {tool.name for tool in await server_mod.mcp.list_tools()}
+        assert names == {"read_note_tool"}
+        assert seen["service"] is not None
+        wait(lambda: fake_ob.live_sync_pids())
     finally:
         service_mod.stop_ob()
         service_mod.set_service(None)
