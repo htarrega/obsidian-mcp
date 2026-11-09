@@ -1,0 +1,13 @@
+{
+  "name": "obsidian-headless-deploy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned obsidian-headless (ob) for the obsidian-mcp VM; installed with npm ci by deploy/provision.sh",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "obsidian-headless": "0.0.14"
+  }
+}
