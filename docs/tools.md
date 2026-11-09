@@ -7,11 +7,11 @@ index of what exists and where to look for more.
 
 | Category | Tools |
 |---|---|
-| **Read** | `list_notes`, `list_files`, `read_note` (mode: `full`/`outline`/`rendered`), `search_notes`, `find_similar_notes` |
-| **Write** | `write_note`, `patch_note`, `patch_note_text`, `append_to_note`, `patch_frontmatter` (one note via `path=` or many via `paths=`), `manage_tags`, `move_note`†, `find_replace_in_vault`† |
+| **Read** | `list_notes`, `list_files`, `read_note` (mode: `full`/`outline`/`rendered`; path or bare note name), `get_outline`, `get_recent_notes`, `search_notes`, `find_similar_notes` |
+| **Write** | `write_note`, `patch_note`, `patch_note_text`, `append_to_note`, `prepend_to_note`, `set_task_status`, `patch_frontmatter` (one note via `path=` or many via `paths=`), `manage_tags`, `move_note`†, `find_replace_in_vault`† |
 | **Delete** | `delete`* (`trash=True` dispatches on file vs. folder), `restore`*, `list_trash`* |
 | **Folders** | `list_folder`, `create_folder`, `rename_folder`† |
-| **Query** | `query_notes`, `get_backlinks`, `get_broken_links`, `get_orphans`, `get_link_graph`, `get_vault_stats`, `get_tasks`, `resolve_alias` |
+| **Query** | `query_notes`, `get_backlinks`, `get_outgoing_links`, `get_broken_links`, `get_orphans`, `get_link_graph`, `get_vault_stats`, `get_tasks`, `resolve_alias` |
 | **Tags** | `list_all_tags` (mode: `flat`/`tree`; notes for one tag: `query_notes(tags=[...])`) |
 | **Periodic** | `get_periodic_note` (period: `daily`/`weekly`/`monthly`/`quarterly`/`yearly`) |
 | **Schema & Audit** | `lint_schema`, `get_vault_conventions`, `get_audit_log` |
@@ -32,6 +32,45 @@ index of what exists and where to look for more.
 tools aren't just refused at call time, they're never registered, so they
 don't appear in a connected client's tool list at all.
 
+Every tool name above carries a `_tool` suffix on the wire (`read_note_tool`),
+except the `ob` sync tools (`sync_status`, ...). An operator can hide any of
+them with `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST`, and drop the prompts and
+resources below with `ENABLE_PROMPTS` / `ENABLE_RESOURCES` — see
+[Configuration](configuration.md#exposed-tool-surface).
+
+## Verb-style tools
+
+These mirror an Obsidian-CLI style workflow (`read`, `outline`, `links`,
+`prepend`, `task ... done`, `recents`):
+
+- `read_note`, `get_outline`, `get_outgoing_links` and `get_backlinks` take a
+  vault path (`Folder/Note.md`) or a bare note name (`Note`), resolved like a
+  `[[wikilink]]`: case-insensitive, alias-aware, the shortest path winning
+  when several notes share a name. `meta.resolved_from` and
+  `meta.candidates` say when a name was resolved. Write tools always take an
+  exact path.
+- `get_outline` — headings `[{level, text, line}]` with 1-based file lines;
+  headings inside frontmatter, code blocks or `%%` comments are ignored.
+- `get_outgoing_links` — one item per distinct link or embed:
+  `{target, heading, embed, kind: note|attachment, resolved, count}`;
+  `resolved: null` means broken (or outside the caller's read scope).
+- `get_recent_notes(limit=20, folder="")` — notes by modification time,
+  newest first, skipping `.obsidian/`, `.trash/` and `EXCLUDE_PATHS`.
+- `prepend_to_note(path, content)` — inserts `content` verbatim at the top
+  of the body: after the frontmatter (and the blank lines after it) and
+  after a leading `# Title` line, otherwise at line 1. On a newest-on-top
+  log (`## 9 Nov` above `## 6 Nov`) that is exactly where a new day goes.
+  Like `append_to_note` it locks the file, honours `expected_revision`,
+  write policy and the audit log, and creates a missing note unless
+  `create=false`.
+- `set_task_status(path, line, done, expected_text)` — swaps only the
+  checkbox of the task on that file line. It is refused when the line is
+  not a task (or sits in code) or its text no longer matches
+  `expected_text` (whitespace/case-insensitive; the clean text from
+  `get_tasks` or the raw text both work), which protects against stale line
+  numbers. Setting the state a task already has writes nothing
+  (`meta.action: unchanged`). No Tasks-plugin `✅` date is added.
+
 ## Links, tags and tasks
 
 - `get_broken_links` resolves links like Obsidian: case-insensitive, an
@@ -48,6 +87,8 @@ don't appear in a connected client's tool list at all.
   `occurrences`, `first_line`, `last_line`. Also: `group_by` (`none`/`source`),
   `exclude_folders`, `path_glob`, `summary_only` (per-note open/done/total).
   Bullets `-`, `*`, `+` and `1.`, nested or in callouts, are recognised.
+  A task's `line` is its 1-based line in the file (frontmatter included),
+  ready for `set_task_status`.
 - Tag listing follows Obsidian's inline-tag rules and the `TAGS_SOURCE`
   setting — see [Configuration](configuration.md#tags).
 

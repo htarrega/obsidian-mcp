@@ -264,6 +264,35 @@ call time — they're never registered, so they don't appear in a connected
 client's tool list at all. Their underlying Python functions remain
 available for local/unit-test use regardless of the flag.
 
+## Exposed tool surface
+
+```env
+# TOOLS_ALLOWLIST=read_note_tool,search_notes_tool,get_outline_tool,...
+# TOOLS_DENYLIST=lint_schema_tool
+# ENABLE_PROMPTS=true
+# ENABLE_RESOURCES=true
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TOOLS_ALLOWLIST` | empty (all) | Comma-separated exact tool names. When set, every registered tool not listed is removed, including `ob` tools and the opt-in groups above. |
+| `TOOLS_DENYLIST` | empty | Comma-separated tool names removed after the allowlist. |
+| `ENABLE_PROMPTS` | `true` | `false` removes the generic `weekly_review` / `daily_note` prompts (they assume daily notes under the periodic-note layout). |
+| `ENABLE_RESOURCES` | `true` | `false` removes the `vault://notes/{path}`, `vault://stats` and `vault://tags` resources. |
+
+The filters run once at startup after every registration (the `ENABLE_*`
+groups and `register_ob_tools`), through FastMCP's `LocalProvider.remove_*`
+API: removed tools are neither listed nor callable. A name that matches no
+registered tool (a typo, or a tool whose `ENABLE_*` group is off) is logged
+as a warning and otherwise ignored, so the server still starts. The filters
+only change what MCP clients see: the index, the watcher, the audit log and
+the `ob sync` supervisor run the same whichever tools are exposed. The
+`ENABLE_*` flags still decide what gets registered at all; use them for
+anything that must not exist in the process, and the allowlist to trim the
+surface a model sees. `deploy/env.example` has an annotated production
+allowlist for a vault driven like the Obsidian CLI (no frontmatter, tags,
+daily notes or templates).
+
 ## Obsidian Headless sync (ob)
 
 ```env
