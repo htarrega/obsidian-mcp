@@ -132,3 +132,45 @@ def mask_non_content(text: str) -> str:
 def mask_pattern(text: str, pattern: re.Pattern[str]) -> str:
     """Blank out every match of ``pattern`` (length- and line-preserving)."""
     return pattern.sub(lambda m: _blank(m.group(0)), text)
+
+
+# A YAML frontmatter block at the very start of a file.
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+
+# An ATX heading: up to three spaces of indentation, 1-6 "#", then at least
+# one space or tab ("#tag" is not a heading).
+_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*$", re.MULTILINE)
+_CLOSING_HASHES_RE = re.compile(r"[ \t]+#+$")
+
+
+def frontmatter_end(text: str) -> int:
+    """Offset just past a leading YAML frontmatter block (0 if there is none)."""
+    m = _FRONTMATTER_RE.match(text)
+    return m.end() if m else 0
+
+
+def extract_headings(text: str) -> list[dict]:
+    """ATX headings of a whole file as ``[{level, text, line}]``.
+
+    ``line`` is the 1-based line in ``text``. Frontmatter, fenced/inline code
+    and ``%%`` comments are ignored, so a ``# comment`` inside a code block is
+    not reported as a heading.
+    """
+    end = frontmatter_end(text)
+    scan = _blank(text[:end]) + mask_non_content(text[end:])
+    headings: list[dict] = []
+    for m in _HEADING_RE.finditer(scan):
+        # Take the title from the original text: masking blanks inline code,
+        # which may legitimately be part of a heading title.
+        start = m.start(2)
+        stop = text.find("\n", start)
+        title = text[start:] if stop == -1 else text[start:stop]
+        title = _CLOSING_HASHES_RE.sub("", title.strip())
+        if not title:
+            continue
+        headings.append({
+            "level": len(m.group(1)),
+            "text": title,
+            "line": text.count("\n", 0, m.start()) + 1,
+        })
+    return headings

@@ -89,6 +89,12 @@ def parse_note(raw_content: str, path: str = "", tags_source: str | None = None)
         fm = {}
         body = raw_content
 
+    # The parsed body drops the frontmatter and surrounding blank lines; task
+    # line numbers are reported against the whole file so a caller can act on
+    # them (set_task_status_tool) without knowing about that offset.
+    body_start = raw_content.rfind(body) if body else -1
+    line_offset = raw_content.count("\n", 0, body_start) if body_start > 0 else 0
+
     return Note(
         path=path,
         frontmatter=fm,
@@ -98,7 +104,7 @@ def parse_note(raw_content: str, path: str = "", tags_source: str | None = None)
         block_refs=extract_block_refs(body),
         block_links=extract_block_links(body),
         callouts=extract_callouts(body),
-        tasks=extract_tasks(body),
+        tasks=extract_tasks(body, line_offset=line_offset),
         inline_fields=extract_inline_fields(body),
         content=body,
     )
@@ -229,11 +235,12 @@ def _extract_task_markers(
     return re.sub(r"[ \t]{2,}", " ", text).strip(), due, recurrence, priority, done_date
 
 
-def extract_tasks(body: str) -> list[Task]:
-    """Checkbox tasks outside code and ``%%`` comments."""
+def extract_tasks(body: str, line_offset: int = 0) -> list[Task]:
+    """Checkbox tasks outside code and ``%%`` comments. ``line_offset`` is
+    added to each 1-based line number (lines preceding ``body`` in the file)."""
     tasks: list[Task] = []
     for m in _TASK_RE.finditer(mask_non_content(body)):
-        line_num = body[: m.start()].count("\n") + 1
+        line_num = body[: m.start()].count("\n") + 1 + line_offset
         done = m.group(1).lower() == "x"
         text, due, recurrence, priority, done_date = _extract_task_markers(m.group(2).strip())
         tasks.append(

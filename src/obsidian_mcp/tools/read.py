@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from ..config import get_config
+from ..domain.markdown_scan import extract_headings
 from ..domain.parser import parse_note
 from ..storage.filesystem import VaultStorage
 from ..storage.policy import matches_path_rule
@@ -187,7 +188,6 @@ def _match_filename(
 
 
 _EMBED_RE = re.compile(r"!\[\[([^\]#|^]+?)(?:#([^\]|^]+?))?(?:\|[^\]]*)?\]\]")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
 
 def get_note_outline(path: str) -> dict:
@@ -197,13 +197,9 @@ def get_note_outline(path: str) -> dict:
     raw, revision = VaultStorage.from_config(cfg).read_text_with_revision(path)
     note = parse_note(raw, path=path)
 
-    headings = [
-        {"level": len(m.group(1)), "text": m.group(2).strip(), "line": raw[:m.start()].count("\n") + 1}
-        for m in _HEADING_RE.finditer(raw)
-    ]
     return {
         "path": path,
-        "headings": headings,
+        "headings": extract_headings(raw),
         "block_refs": [
             {"block_id": br.block_id, "line": br.line, "text": br.text[:80]}
             for br in note.block_refs
