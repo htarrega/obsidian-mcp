@@ -319,6 +319,22 @@ class VaultIndex:
             if note.block_refs:
                 self._block_index[path] = {r.block_id: r.line for r in note.block_refs}
 
+    def get_alias_map(self) -> dict[str, str]:
+        """Lower-cased alias (or note stem) → note path."""
+        self._assert_ready()
+        with self._lock:
+            return dict(self._alias_index)
+
+    def list_link_targets(self) -> list[str]:
+        """Every readable, non-excluded vault file a link can point to —
+        notes, attachments and Excalidraw drawings alike. Listed fresh from
+        storage, since attachments are not tracked by the index."""
+        return [
+            item.relative
+            for item in self._storage.list_files()
+            if not self._is_excluded(item.relative, notes_only=False)
+        ]
+
     def has_note(self, target: str) -> bool:
         """Return True if target resolves to a known note (by stem, path, alias, or path-without-ext)."""
         self._assert_ready()
@@ -343,7 +359,7 @@ class VaultIndex:
         if not self._ready:
             raise IndexBuildingError("Index is still being built – try again shortly")
 
-    def _is_excluded(self, path: str | Path) -> bool:
+    def _is_excluded(self, path: str | Path, *, notes_only: bool = True) -> bool:
         if isinstance(path, Path):
             rel = "/".join(path.relative_to(self._vault_root).parts)
             name = path.name
@@ -355,4 +371,5 @@ class VaultIndex:
         # Excalidraw files are *.md so they'd otherwise get tag/wikilink-parsed
         # as regular notes — their body is an embedded JSON scene, not prose,
         # and things like "#ffffff" hex colors would show up as bogus tags.
-        return name.endswith(".excalidraw.md")
+        # notes_only=False keeps them as link targets ([[Foo.excalidraw]]).
+        return notes_only and name.endswith(".excalidraw.md")

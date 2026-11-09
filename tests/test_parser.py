@@ -115,11 +115,11 @@ def test_hash_in_link_alias_not_a_tag():
     assert note.tags == ["real-tag"]
 
 
-def test_tag_in_single_brackets_still_counted():
-    # Only [[...]] links are blanked; a lone "[" must not hide a tag.
-    raw = "Status [#todo] open."
-    note = parse_note(raw, path="x.md")
-    assert note.tags == ["todo"]
+def test_tag_in_single_brackets_needs_preceding_whitespace():
+    # Only [[...]] links are blanked; a lone "[" must not hide a tag that is
+    # preceded by whitespace, but "#" glued to "[" is not a tag (Obsidian).
+    assert parse_note("Status [ #todo ] open.", path="x.md").tags == ["todo"]
+    assert parse_note("Status [#todo] open.", path="x.md").tags == []
 
 
 def test_tags_from_frontmatter_string():

@@ -28,7 +28,7 @@ The intended setup is to host obsidian-mcp on a server or NAS where your vault i
 - **Write** — create/overwrite notes (with automatic frontmatter preservation, dry-run previews, and unified diffs), patch sections or anchor-less body text, append content, update frontmatter (single or batch), manage tags, move notes with automatic wikilink rewriting
 - **Optimistic concurrency** — every read returns a revision; pass it back to a write to detect edits landed by Obsidian Sync in between
 - **Folders** — list (optionally recursive with a full tree dump), create, delete, rename folders; renaming rewrites path-based wikilinks vault-wide
-- **Query & Graph** — backlinks, broken links, orphan detection, BFS link graph, vault stats, task collection across vault
+- **Query & Graph** — backlinks, broken links resolved with Obsidian's rules (attachments by file name, kind + suggested fix), orphan detection, BFS link graph, vault stats, paged task collection with dedupe for repeated worklog tasks
 - **Dataview-like queries** — filter notes by tags, status, frontmatter fields (exact match or `$ne`/`$in`/`$nin`/`$exists` operators), or inline fields (`key:: value`)
 - **Audit log** — every write-tool call is recorded; `get_audit_log_tool` queries it
 - **Periodic Notes** — read/preview daily, weekly, monthly, quarterly, yearly journal notes from templates
@@ -69,7 +69,9 @@ Copy `.env.example` to `.env` and set your vault path:
 VAULT_PATH=/path/to/your/obsidian/vault
 ```
 
-That's enough for local `stdio` use. For network transports, path
+That's enough for local `stdio` use. `TAGS_SOURCE=frontmatter|inline|both`
+(default `both`) picks where tags are read from — see
+[Configuration → Tags](docs/configuration.md#tags). For network transports, path
 restrictions, optional plugin-format tools, and every other variable, see
 **[Configuration](docs/configuration.md)**.
 

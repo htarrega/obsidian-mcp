@@ -422,6 +422,7 @@ class Config:
     enable_folder_rename: bool = field(init=False)
     enable_bulk_replace: bool = field(init=False)
     enable_delete: bool = field(init=False)
+    tags_source: str = field(init=False)
 
     def __init__(self) -> None:
         set_value = object.__setattr__
@@ -597,6 +598,8 @@ class Config:
                 attribute,
                 os.environ.get(environment, "false").lower() in ("1", "true", "yes"),
             )
+
+        set_value(self, "tags_source", tags_source_from_env())
 
         set_value(self, "transport", os.environ.get("TRANSPORT", "stdio"))
         if self.multi_vault and self.transport == "stdio":
@@ -800,6 +803,19 @@ def regex_max_repeat_from_env() -> int:
     """REGEX_MAX_REPEAT (default 100): largest ``{n}``/``{n,m}`` repetition
     count accepted in a caller-supplied regex (compile-time memory guard)."""
     return _env_positive_int("REGEX_MAX_REPEAT", 100)
+
+
+TAGS_SOURCES = ("frontmatter", "inline", "both")
+
+
+def tags_source_from_env() -> str:
+    """TAGS_SOURCE (default ``both``): where tags come from — ``frontmatter``
+    (the ``tags:`` property only), ``inline`` (``#tag`` in the body only) or
+    ``both``. Applies to tag listing, tag search filters and manage_tags."""
+    raw = os.environ.get("TAGS_SOURCE", "").strip().lower() or "both"
+    if raw not in TAGS_SOURCES:
+        raise ConfigError("TAGS_SOURCE must be one of: frontmatter, inline, both")
+    return raw
 
 
 _config: Config | None = None

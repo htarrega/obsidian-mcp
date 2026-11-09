@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `list_folder_tool(recursive=true, max_depth=N)` marks folders cut by the
+  depth limit with `truncated: true` and `children_count`, so they are no
+  longer indistinguishable from empty folders.
+- `get_tasks_tool`: `limit` (default 100, max 1000), `offset`, `dedupe`,
+  `group_by`, `exclude_folders`, `path_glob`, `summary_only`; `meta` now
+  carries `total`, `returned`, `truncated` and `offset`.
+- `TAGS_SOURCE=frontmatter|inline|both` (default `both`).
+- `get_broken_links_tool` items carry `kind` and `suggestion`; ambiguous
+  names are reported in `meta.warnings`.
+
 ### Changed
 
 - **Breaking:** `get_vault_stats_tool` / `vault://stats` `most_linked` is now
@@ -23,11 +35,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitive substring `filter`, and collapses consecutive identical
   lines (`collapse_repeats=true`). `lines` counts lines after filtering.
 
-### Added
+### Fixed
 
-- `list_folder_tool(recursive=true, max_depth=N)` marks folders cut by the
-  depth limit with `truncated: true` and `children_count`, so they are no
-  longer indistinguishable from empty folders.
+- Broken links: attachments and partial paths resolve by file name across
+  the whole vault, `[[Foo.excalidraw]]` resolves to `Foo.excalidraw.md`, and
+  links in fenced code (``` and ~~~), inline code, `%% comments %%` and
+  data such as `[[1,320,320,3]]` are ignored. `resolve_alias_tool` resolves
+  attachment names.
+- Tags: URL fragments, Markdown link targets, numeric-only tags (`#14/`), hex
+  colors and hex identifiers are no longer tags; `#` must follow whitespace
+  or start a line, so `[#todo]` is no longer a tag (Obsidian behaviour).
+- Tasks: `*`, `+` and numbered bullets and tasks inside callouts are parsed;
+  tasks in code blocks and comments are ignored.
+
 
 ## [2.1.2] - 2026-11-01
 
