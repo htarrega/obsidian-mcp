@@ -11,6 +11,8 @@
 #   --commit / COMMIT                  REQUIRED, full 40-hex commit SHA (no branches/tags)
 #   --ob-version / OB_VERSION          obsidian-headless npm version (0.0.14)
 #   --uv-version / UV_VERSION          uv version               (0.11.7)
+#   --uv-sha256 / UV_SHA256            sha256 of the uv release tarball; required
+#                                      only for a UV_VERSION/arch not pinned below
 #   --python-version / PYTHON_VERSION  uv-managed CPython        (3.12; may be a full 3.12.x)
 #   --node-major / NODE_MAJOR          NodeSource major version (22)
 #   --caddy-version / CADDY_VERSION    apt version of caddy     (2.11.9; "latest" = newest in repo)
@@ -33,6 +35,7 @@ REPO_URL="${REPO_URL:-https://github.com/htarrega/obsidian-mcp.git}"
 COMMIT="${COMMIT:-}"
 OB_VERSION="${OB_VERSION:-0.0.14}"
 UV_VERSION="${UV_VERSION:-0.11.7}"
+UV_SHA256="${UV_SHA256:-}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 CADDY_VERSION="${CADDY_VERSION:-2.11.9}"
@@ -67,6 +70,19 @@ CADDY_KEY_FPR=65760C51EDEA2017CEA2CA15155B6D79CA56EA34
 #   NodeSource publication if one appears, and update it if they rotate keys.
 NODESOURCE_KEY_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
 
+# SHA-256 of the official uv release tarballs
+# (https://github.com/astral-sh/uv/releases/download/<version>/uv-<arch>-unknown-linux-gnu.tar.gz).
+# 0.11.7: the GitHub release asset `digest`, the release's .sha256 files and a
+# local sha256sum of the downloaded tarballs all agree (2026-11-09).
+# To bump uv, add the new version's lines here (see deploy/README.md).
+uv_pinned_sha256() {
+	case "$1/$2" in
+		0.11.7/aarch64) echo f2ee1cde9aabb4c6e43bd3f341dadaf42189a54e001e521346dc31547310e284 ;;
+		0.11.7/x86_64) echo 6681d691eb7f9c00ac6a3af54252f7ab29ae72f0c8f95bdc7f9d1401c23ea868 ;;
+		*) return 0 ;;
+	esac
+}
+
 export DEBIAN_FRONTEND=noninteractive
 # Wait for the dpkg/apt lock (cloud-init and unattended-upgrades hold it on first boot).
 APT_OPTS=(-y -o DPkg::Lock::Timeout=900 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
@@ -82,7 +98,7 @@ info() { printf '    %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN: %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
 
 parse_args() {
 	while (($#)); do
@@ -92,6 +108,7 @@ parse_args() {
 			--commit) COMMIT="${2:?}"; shift 2 ;;
 			--ob-version) OB_VERSION="${2:?}"; shift 2 ;;
 			--uv-version) UV_VERSION="${2:?}"; shift 2 ;;
+			--uv-sha256) UV_SHA256="${2:?}"; shift 2 ;;
 			--python-version) PYTHON_VERSION="${2:?}"; shift 2 ;;
 			--node-major) NODE_MAJOR="${2:?}"; shift 2 ;;
 			--caddy-version) CADDY_VERSION="${2:?}"; shift 2 ;;
@@ -114,6 +131,7 @@ validate() {
 	[[ $SSH_ALLOWED_PORTS =~ ^[0-9]+(,[0-9]+)*$ ]] || die "SSH_ALLOWED_PORTS must be comma-separated port numbers"
 	[[ $OB_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "OB_VERSION must be an exact x.y.z version"
 	[[ $UV_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "UV_VERSION must be an exact x.y.z version"
+	[[ -z $UV_SHA256 || $UV_SHA256 =~ ^[0-9a-f]{64}$ ]] || die "UV_SHA256 must be 64 lowercase hex characters"
 	[[ $NODE_MAJOR =~ ^[0-9]+$ ]] || die "NODE_MAJOR must be a number"
 	[[ $CADDY_VERSION == latest || $CADDY_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.~+]+)?$ ]] \
 		|| die "CADDY_VERSION must be an exact apt version (e.g. 2.11.9) or 'latest'"
@@ -316,16 +334,52 @@ step_node_ob() {
 	[[ $ob_path == /usr/bin/ob ]] || warn "ob is at $ob_path, not /usr/bin/ob: set OB_BIN accordingly in $ENV_FILE"
 }
 
+# Install uv/uvx ${UV_VERSION} into /usr/local/bin from the official GitHub
+# release tarball, refusing it unless its sha256 is the pinned (or explicitly
+# given UV_SHA256) value. No installer script is executed.
+install_uv() {
+	local arch pinned expected triple url tmp got
+	arch=$(uname -m)
+	case "$arch" in
+		aarch64 | x86_64) ;;
+		*) die "no uv release tarball handled for architecture $arch" ;;
+	esac
+	pinned=$(uv_pinned_sha256 "$UV_VERSION" "$arch")
+	if [[ -n $pinned && -n $UV_SHA256 && $UV_SHA256 != "$pinned" ]]; then
+		die "UV_SHA256 ($UV_SHA256) contradicts the hash pinned in provision.sh for uv $UV_VERSION/$arch ($pinned)"
+	fi
+	expected=${pinned:-$UV_SHA256}
+	[[ -n $expected ]] \
+		|| die "no sha256 pinned for uv $UV_VERSION/$arch: pass UV_SHA256=<hex> (or --uv-sha256) from the release's .sha256 file, or pin it in provision.sh"
+	triple="${arch}-unknown-linux-gnu"
+	url="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${triple}.tar.gz"
+	tmp=$(mktemp -d)
+	info "downloading $url"
+	curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$tmp/uv.tar.gz"
+	got=$(sha256sum "$tmp/uv.tar.gz")
+	got=${got%% *}
+	if [[ $got != "$expected" ]]; then
+		rm -rf "$tmp"
+		die "uv tarball sha256 mismatch: got $got, expected $expected (refusing to install)"
+	fi
+	info "uv tarball sha256 $got verified"
+	tar -xzf "$tmp/uv.tar.gz" -C "$tmp" --no-same-owner --no-same-permissions
+	local bin
+	for bin in uv uvx; do
+		[[ -f $tmp/uv-$triple/$bin ]] || die "uv tarball lacks uv-$triple/$bin"
+		install -o root -g root -m 0755 "$tmp/uv-$triple/$bin" "/usr/local/bin/$bin"
+	done
+	rm -rf "$tmp"
+}
+
 step_uv_python() {
 	log "uv ${UV_VERSION} + CPython ${PYTHON_VERSION} (in ${PY_DIR})"
 	local have=""
 	[[ -x /usr/local/bin/uv ]] && have=$(/usr/local/bin/uv --version | awk '{print $2}')
 	if [[ $have != "$UV_VERSION" ]]; then
-		local installer
-		installer=$(mktemp)
-		curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" -o "$installer"
-		env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh "$installer"
-		rm -f "$installer"
+		install_uv
+	else
+		info "uv ${UV_VERSION} already installed"
 	fi
 	[[ $(/usr/local/bin/uv --version | awk '{print $2}') == "$UV_VERSION" ]] || die "uv version mismatch after install"
 	install -d -m 0755 "$OPT_DIR" "$PY_DIR"
