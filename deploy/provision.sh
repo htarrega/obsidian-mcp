@@ -9,8 +9,12 @@
 #   --domain / DOMAIN                  public hostname          (obsidian.mcp.htarrega.me)
 #   --repo-url / REPO_URL              git repository           (https://github.com/htarrega/obsidian-mcp.git)
 #   --commit / COMMIT                  REQUIRED, full 40-hex commit SHA (no branches/tags)
-#   --ob-version / OB_VERSION          obsidian-headless npm version (0.0.14)
+#   --ob-version / OB_VERSION          obsidian-headless version expected in
+#                                      ob-headless/package-lock.json (empty = take
+#                                      it from the lock; a mismatch aborts)
 #   --uv-version / UV_VERSION          uv version               (0.11.7)
+#   --uv-sha256 / UV_SHA256            sha256 of the uv release tarball; required
+#                                      only for a UV_VERSION/arch not pinned below
 #   --python-version / PYTHON_VERSION  uv-managed CPython        (3.12; may be a full 3.12.x)
 #   --node-major / NODE_MAJOR          NodeSource major version (22)
 #   --caddy-version / CADDY_VERSION    apt version of caddy     (2.11.9; "latest" = newest in repo)
@@ -21,7 +25,8 @@
 #   --no-start                         never (re)start obsidian-mcp
 #
 # Re-running is safe: existing /etc/obsidian-mcp/env is never overwritten, rules
-# and packages are only added when missing.
+# and packages are only added when missing; obsidian-headless is rebuilt only
+# when ob-headless/package-lock.json (or the Node ABI) changes.
 
 set -euo pipefail
 umask 022
@@ -31,8 +36,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DOMAIN="${DOMAIN:-obsidian.mcp.htarrega.me}"
 REPO_URL="${REPO_URL:-https://github.com/htarrega/obsidian-mcp.git}"
 COMMIT="${COMMIT:-}"
-OB_VERSION="${OB_VERSION:-0.0.14}"
+OB_VERSION="${OB_VERSION:-}"
 UV_VERSION="${UV_VERSION:-0.11.7}"
+UV_SHA256="${UV_SHA256:-}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 CADDY_VERSION="${CADDY_VERSION:-2.11.9}"
@@ -53,6 +59,13 @@ ETC_DIR=/etc/obsidian-mcp
 ENV_FILE="$ETC_DIR/env"
 UNIT_NAME=obsidian-mcp.service
 CONSOLE_SCRIPT=obsidian-remote-mcp
+# obsidian-headless: installed with `npm ci` from the committed lock into a
+# root-owned prefix, built by an unprivileged throwaway user.
+OBH_SRC_DIR="$SCRIPT_DIR/ob-headless"
+OBH_DIR=/opt/obsidian-headless
+OBH_STAMP="$OBH_DIR/.provision-stamp"
+OBH_BUILD_USER=obhbuild
+OB_LINK=/usr/bin/ob
 
 # Expected primary-key fingerprints of the APT repository signing keys. The
 # downloaded key is refused unless it is exactly this one key.
@@ -66,6 +79,19 @@ CADDY_KEY_FPR=65760C51EDEA2017CEA2CA15155B6D79CA56EA34
 #   keyserver.ubuntu.com (2026-11-08). Re-confirm against an official
 #   NodeSource publication if one appears, and update it if they rotate keys.
 NODESOURCE_KEY_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
+
+# SHA-256 of the official uv release tarballs
+# (https://github.com/astral-sh/uv/releases/download/<version>/uv-<arch>-unknown-linux-gnu.tar.gz).
+# 0.11.7: the GitHub release asset `digest`, the release's .sha256 files and a
+# local sha256sum of the downloaded tarballs all agree (2026-11-09).
+# To bump uv, add the new version's lines here (see deploy/README.md).
+uv_pinned_sha256() {
+	case "$1/$2" in
+		0.11.7/aarch64) echo f2ee1cde9aabb4c6e43bd3f341dadaf42189a54e001e521346dc31547310e284 ;;
+		0.11.7/x86_64) echo 6681d691eb7f9c00ac6a3af54252f7ab29ae72f0c8f95bdc7f9d1401c23ea868 ;;
+		*) return 0 ;;
+	esac
+}
 
 export DEBIAN_FRONTEND=noninteractive
 # Wait for the dpkg/apt lock (cloud-init and unattended-upgrades hold it on first boot).
@@ -82,7 +108,7 @@ info() { printf '    %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN: %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
 
 parse_args() {
 	while (($#)); do
@@ -92,6 +118,7 @@ parse_args() {
 			--commit) COMMIT="${2:?}"; shift 2 ;;
 			--ob-version) OB_VERSION="${2:?}"; shift 2 ;;
 			--uv-version) UV_VERSION="${2:?}"; shift 2 ;;
+			--uv-sha256) UV_SHA256="${2:?}"; shift 2 ;;
 			--python-version) PYTHON_VERSION="${2:?}"; shift 2 ;;
 			--node-major) NODE_MAJOR="${2:?}"; shift 2 ;;
 			--caddy-version) CADDY_VERSION="${2:?}"; shift 2 ;;
@@ -112,8 +139,9 @@ validate() {
 	[[ $DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
 		|| die "DOMAIN is not a valid hostname: '$DOMAIN'"
 	[[ $SSH_ALLOWED_PORTS =~ ^[0-9]+(,[0-9]+)*$ ]] || die "SSH_ALLOWED_PORTS must be comma-separated port numbers"
-	[[ $OB_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "OB_VERSION must be an exact x.y.z version"
+	[[ -z $OB_VERSION || $OB_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "OB_VERSION must be an exact x.y.z version"
 	[[ $UV_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "UV_VERSION must be an exact x.y.z version"
+	[[ -z $UV_SHA256 || $UV_SHA256 =~ ^[0-9a-f]{64}$ ]] || die "UV_SHA256 must be 64 lowercase hex characters"
 	[[ $NODE_MAJOR =~ ^[0-9]+$ ]] || die "NODE_MAJOR must be a number"
 	[[ $CADDY_VERSION == latest || $CADDY_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.~+]+)?$ ]] \
 		|| die "CADDY_VERSION must be an exact apt version (e.g. 2.11.9) or 'latest'"
@@ -122,7 +150,8 @@ validate() {
 	for f in obsidian-mcp.service Caddyfile.template env.example sysctl-obsidian.conf \
 		sshd-hardening.conf logrotate-obsidian-headless fail2ban-sshd.local \
 		fail2ban-caddy-oauth.conf fail2ban-caddy-oauth.local oauth-store-usage.sh \
-		obsidian-mcp-oauth-usage.service obsidian-mcp-oauth-usage.timer; do
+		obsidian-mcp-oauth-usage.service obsidian-mcp-oauth-usage.timer \
+		ob-headless/package.json ob-headless/package-lock.json; do
 		[[ -f $SCRIPT_DIR/$f ]] || die "missing $SCRIPT_DIR/$f (copy the whole deploy/ directory)"
 	done
 	if [[ $(dpkg --print-architecture) != arm64 ]]; then
@@ -297,23 +326,157 @@ step_repos() {
 	apt-get -o DPkg::Lock::Timeout=900 update
 }
 
+# Version of obsidian-headless pinned in the committed lockfile.
+obh_lock_version() {
+	node -p 'require(process.argv[1]).packages["node_modules/obsidian-headless"].version' \
+		"$OBH_SRC_DIR/package-lock.json"
+}
+
+# Content of the install stamp: lockfile digest + Node ABI (native module).
+obh_stamp() {
+	local lock_sha
+	lock_sha=$(sha256sum "$OBH_SRC_DIR/package-lock.json")
+	printf 'lock-sha256=%s node-abi=%s\n' "${lock_sha%% *}" "$(node -p process.versions.modules)"
+}
+
+# Build obsidian-headless from the committed lock into $OBH_DIR.
+#
+# `npm ci` verifies every tarball against its sha512 `integrity` in
+# package-lock.json and refuses a lock that disagrees with package.json. It runs
+# as the unprivileged system user $OBH_BUILD_USER (no-new-privs, empty
+# environment) in a throwaway directory, because better-sqlite3 needs its
+# install script: it is compiled from its (integrity-checked) sources with
+# node-gyp (npm_config_build_from_source) instead of downloading an unverified
+# prebuilt binary. The result is then copied to a root-owned, read-only prefix,
+# so neither the build user nor the service user can modify `ob`.
+obh_build() {
+	local version=$1 build nodedir_env=()
+	getent group "$OBH_BUILD_USER" >/dev/null || groupadd --system "$OBH_BUILD_USER"
+	if ! id -u "$OBH_BUILD_USER" >/dev/null 2>&1; then
+		useradd --system --gid "$OBH_BUILD_USER" --home-dir /nonexistent --no-create-home \
+			--shell /usr/sbin/nologin --comment "obsidian-headless npm build (unprivileged)" "$OBH_BUILD_USER"
+	fi
+	# Headers shipped with the nodejs package avoid node-gyp downloading them.
+	if [[ -f /usr/include/node/node_api.h ]]; then
+		nodedir_env=(npm_config_nodedir=/usr)
+	fi
+
+	build=$(mktemp -d /var/tmp/obh-build.XXXXXXXX)
+	install -m 0644 "$OBH_SRC_DIR/package.json" "$OBH_SRC_DIR/package-lock.json" "$build/"
+	chown -R "$OBH_BUILD_USER:$OBH_BUILD_USER" "$build"
+	info "npm ci as $OBH_BUILD_USER in $build (compiling better-sqlite3, takes a few minutes)"
+	(
+		cd "$build"
+		runuser -u "$OBH_BUILD_USER" -- setpriv --no-new-privs \
+			env -i HOME="$build" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+			npm_config_cache="$build/.npm" npm_config_build_from_source=true \
+			npm_config_update_notifier=false npm_config_fund=false npm_config_audit=false \
+			"${nodedir_env[@]}" \
+			npm ci --omit=dev --no-fund --no-audit
+	) || die "npm ci failed (build dir kept for inspection: $build)"
+
+	# Smoke test as the build user, before anything is installed.
+	local got
+	got=$(cd "$build" && runuser -u "$OBH_BUILD_USER" -- env -i PATH=/usr/bin:/bin \
+		node -e 'const D = require(require.resolve("better-sqlite3", { paths: [process.argv[1]] })); new D(":memory:").prepare("select 1").get();' \
+		"$build/node_modules/obsidian-headless" \
+		&& runuser -u "$OBH_BUILD_USER" -- env -i PATH=/usr/bin:/bin HOME="$build" "$build/node_modules/.bin/ob" --version) \
+		|| die "freshly built obsidian-headless does not run (build dir kept: $build)"
+	[[ $got == "$version" ]] || die "built ob reports version '$got', expected $version"
+
+	# Root-owned, read-only copy (cp -R keeps the .bin symlinks as symlinks).
+	rm -rf "$OBH_DIR.new" "$OBH_DIR.old"
+	install -d -o root -g root -m 0755 "$OBH_DIR.new"
+	cp -R "$build/package.json" "$build/package-lock.json" "$build/node_modules" "$OBH_DIR.new/"
+	chown -R root:root "$OBH_DIR.new"
+	chmod -R u=rwX,go=rX "$OBH_DIR.new"
+	rm -rf "$build"
+	if [[ -e $OBH_DIR ]]; then
+		mv "$OBH_DIR" "$OBH_DIR.old"
+	fi
+	mv "$OBH_DIR.new" "$OBH_DIR"
+	rm -rf "$OBH_DIR.old"
+}
+
 step_node_ob() {
-	log "Node.js ${NODE_MAJOR} + obsidian-headless@${OB_VERSION}"
+	log "Node.js ${NODE_MAJOR} + obsidian-headless (npm ci from ob-headless/package-lock.json)"
 	apt_install nodejs
 	local major
 	major=$(node -p 'process.versions.node.split(".")[0]')
 	[[ $major == "$NODE_MAJOR" ]] || die "node major is $major, expected $NODE_MAJOR (check apt pinning)"
-	if grep -q "obsidian-headless@${OB_VERSION}\$" <<<"$(npm ls -g --depth=0 obsidian-headless 2>/dev/null || true)"; then
-		info "obsidian-headless@${OB_VERSION} already installed"
-	else
-		# better-sqlite3 is native; build-essential + python3 (installed above)
-		# let node-gyp compile it if no linux-arm64 prebuild matches.
-		npm install -g --no-fund --no-audit "obsidian-headless@${OB_VERSION}"
+
+	local version
+	version=$(obh_lock_version)
+	[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "cannot read the obsidian-headless version from $OBH_SRC_DIR/package-lock.json"
+	if [[ -n $OB_VERSION && $OB_VERSION != "$version" ]]; then
+		die "OB_VERSION=$OB_VERSION but ob-headless/package-lock.json pins $version (bump it in package.json and regenerate the lock, see deploy/README.md)"
 	fi
-	local ob_path
-	ob_path=$(command -v ob) || die "ob not found on PATH after npm install"
-	info "ob -> $ob_path ($(readlink -f "$ob_path"))"
-	[[ $ob_path == /usr/bin/ob ]] || warn "ob is at $ob_path, not /usr/bin/ob: set OB_BIN accordingly in $ENV_FILE"
+
+	local stamp
+	stamp=$(obh_stamp)
+	if [[ -f $OBH_STAMP && $(<"$OBH_STAMP") == "$stamp" && -f $OBH_DIR/node_modules/obsidian-headless/cli.js ]]; then
+		info "obsidian-headless@${version} already installed from this lock ($OBH_DIR)"
+	else
+		obh_build "$version"
+		printf '%s\n' "$stamp" >"$OBH_STAMP"
+		chmod 0644 "$OBH_STAMP"
+		info "obsidian-headless@${version} installed in $OBH_DIR"
+	fi
+
+	# Drop the old global install (npm install -g) from earlier provisions.
+	local npm_root
+	npm_root=$(npm root -g)
+	if [[ -d $npm_root/obsidian-headless ]]; then
+		info "removing the global npm install of obsidian-headless ($npm_root)"
+		npm uninstall -g --no-fund --no-audit obsidian-headless
+	fi
+
+	# OB_BIN stays /usr/bin/ob.
+	ln -sfn "$OBH_DIR/node_modules/.bin/ob" "$OB_LINK"
+	[[ $(readlink -f "$OB_LINK") == "$OBH_DIR/node_modules/obsidian-headless/cli.js" ]] \
+		|| die "$OB_LINK does not resolve into $OBH_DIR"
+	local got
+	got=$(cd / && runuser -u "$SVC_USER" -- "$OB_LINK" --version) || die "$SVC_USER cannot run $OB_LINK"
+	[[ $got == "$version" ]] || die "$OB_LINK reports version '$got', expected $version"
+	info "$OB_LINK -> $OBH_DIR/node_modules/.bin/ob (obsidian-headless $got, runs as $SVC_USER)"
+}
+
+# Install uv/uvx ${UV_VERSION} into /usr/local/bin from the official GitHub
+# release tarball, refusing it unless its sha256 is the pinned (or explicitly
+# given UV_SHA256) value. No installer script is executed.
+install_uv() {
+	local arch pinned expected triple url tmp got
+	arch=$(uname -m)
+	case "$arch" in
+		aarch64 | x86_64) ;;
+		*) die "no uv release tarball handled for architecture $arch" ;;
+	esac
+	pinned=$(uv_pinned_sha256 "$UV_VERSION" "$arch")
+	if [[ -n $pinned && -n $UV_SHA256 && $UV_SHA256 != "$pinned" ]]; then
+		die "UV_SHA256 ($UV_SHA256) contradicts the hash pinned in provision.sh for uv $UV_VERSION/$arch ($pinned)"
+	fi
+	expected=${pinned:-$UV_SHA256}
+	[[ -n $expected ]] \
+		|| die "no sha256 pinned for uv $UV_VERSION/$arch: pass UV_SHA256=<hex> (or --uv-sha256) from the release's .sha256 file, or pin it in provision.sh"
+	triple="${arch}-unknown-linux-gnu"
+	url="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${triple}.tar.gz"
+	tmp=$(mktemp -d)
+	info "downloading $url"
+	curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$tmp/uv.tar.gz"
+	got=$(sha256sum "$tmp/uv.tar.gz")
+	got=${got%% *}
+	if [[ $got != "$expected" ]]; then
+		rm -rf "$tmp"
+		die "uv tarball sha256 mismatch: got $got, expected $expected (refusing to install)"
+	fi
+	info "uv tarball sha256 $got verified"
+	tar -xzf "$tmp/uv.tar.gz" -C "$tmp" --no-same-owner --no-same-permissions
+	local bin
+	for bin in uv uvx; do
+		[[ -f $tmp/uv-$triple/$bin ]] || die "uv tarball lacks uv-$triple/$bin"
+		install -o root -g root -m 0755 "$tmp/uv-$triple/$bin" "/usr/local/bin/$bin"
+	done
+	rm -rf "$tmp"
 }
 
 step_uv_python() {
@@ -321,11 +484,9 @@ step_uv_python() {
 	local have=""
 	[[ -x /usr/local/bin/uv ]] && have=$(/usr/local/bin/uv --version | awk '{print $2}')
 	if [[ $have != "$UV_VERSION" ]]; then
-		local installer
-		installer=$(mktemp)
-		curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" -o "$installer"
-		env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh "$installer"
-		rm -f "$installer"
+		install_uv
+	else
+		info "uv ${UV_VERSION} already installed"
 	fi
 	[[ $(/usr/local/bin/uv --version | awk '{print $2}') == "$UV_VERSION" ]] || die "uv version mismatch after install"
 	install -d -m 0755 "$OPT_DIR" "$PY_DIR"
@@ -494,7 +655,7 @@ summary() {
 		    deployed commit : $(git -C "$APP_DIR" rev-parse HEAD)  ($(git -C "$APP_DIR" log -1 --format='%cs %s'))
 		    previous commit : $(cat "$OPT_DIR/PREVIOUS_COMMIT" 2>/dev/null || echo '-')
 		    node            : $(node --version)
-		    obsidian-headless: $(npm ls -g --depth=0 obsidian-headless 2>/dev/null | grep -o 'obsidian-headless@[^ ]*' || echo '?')
+		    obsidian-headless: $(node -p 'require(process.argv[1]).version' "$OBH_DIR/node_modules/obsidian-headless/package.json" 2>/dev/null || echo '?')  (${OBH_DIR}, $OB_LINK)
 		    uv              : $(/usr/local/bin/uv --version)
 		    python (venv)   : ${python_v}
 		    caddy           : ${caddy_v}
