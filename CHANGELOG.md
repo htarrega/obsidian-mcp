@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking:** `get_vault_stats_tool` / `vault://stats` `most_linked` is now
+  `[{path, backlinks}]` instead of bare paths, and lists only notes with at
+  least one backlink. Bare paths were easy to misread in vaults with numbered
+  folders such as `(300) Permanent`.
+- `search_notes_tool` returns tighter snippets: new `max_snippets_per_note`
+  (default 2, was a fixed 3) and `context_lines` (default 1, was a fixed 2);
+  overlapping windows are merged and lines are clipped to 240 characters
+  around the match. The score now sums over every matching line. Exact and
+  fuzzy matching ignore accents as well as case (`Siplan` finds `Siplán`).
+- `sync_logs` drops `ob` heartbeat lines by default (`exclude_noise=true`,
+  reporting `noise_lines_skipped` and `last_fully_synced_at`), accepts a
+  case-insensitive substring `filter`, and collapses consecutive identical
+  lines (`collapse_repeats=true`). `lines` counts lines after filtering.
+
+### Added
+
+- `list_folder_tool(recursive=true, max_depth=N)` marks folders cut by the
+  depth limit with `truncated: true` and `children_count`, so they are no
+  longer indistinguishable from empty folders.
+
 ## [2.1.2] - 2026-11-01
 
 ### Fixed
