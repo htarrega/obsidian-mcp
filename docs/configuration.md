@@ -141,6 +141,89 @@ daemon with compatible UID/GID and umask settings so both can continue
 reading and updating new notes — the home-server Compose profile exposes
 these as `PUID`/`PGID` (see [Docker & Deployment](deployment.md)).
 
+## Vault layout
+
+Where this vault keeps its templates, periodic notes, conventions file and
+entry note, and which folders orphan detection skips. All optional; the
+defaults reproduce the historical layout, so existing vaults need nothing.
+
+```env
+# TEMPLATES_DIR=Templates
+# PERIODIC_DAILY_PATH=Journal/{{date:YYYY-MM-DD}}.md
+# PERIODIC_WEEKLY_PATH=Journal/Weekly/{{date:GGGG-[W]WW}}.md
+# PERIODIC_MONTHLY_PATH=Journal/Monthly/{{date:YYYY-MM}}.md
+# PERIODIC_QUARTERLY_PATH=Journal/Quarterly/{{date:YYYY-[Q]Q}}.md
+# PERIODIC_YEARLY_PATH=Journal/Yearly/{{date:YYYY}}.md
+# ORPHAN_EXCLUDES=Journal,Templates
+# ENTRY_NOTE=                       # e.g. Home.md — never reported as an orphan
+# CONVENTIONS_PATH=_AI_INSTRUCTIONS.md
+```
+
+| Variable | Default | Used by |
+|---|---|---|
+| `TEMPLATES_DIR` | `Templates` | `list_templates_tool`, `create_from_template_tool` (a bare template name resolves inside it), periodic-note previews (`<TEMPLATES_DIR>/Daily-Note-Template.md`, …). A missing folder gives an empty list plus `meta.hint`, not an error. |
+| `PERIODIC_<PERIOD>_PATH` | see above | `get_periodic_note_tool`. `<PERIOD>` is `DAILY`, `WEEKLY`, `MONTHLY`, `QUARTERLY` or `YEARLY`. |
+| `ORPHAN_EXCLUDES` | `Journal,Templates` | `get_orphans_tool` when called without `exclude_folders`. Comma-separated. |
+| `ENTRY_NOTE` | unset | Never listed by `get_orphans_tool`; named in the auto-generated conventions summary. `.md` is appended if missing. |
+| `CONVENTIONS_PATH` | `_AI_INSTRUCTIONS.md` | `get_vault_conventions_tool`, `lint_schema_tool`, and the single-vault startup instructions. |
+
+**Periodic patterns** use the Obsidian Daily/Periodic Notes syntax: one or
+more `{{date:FORMAT}}` placeholders with moment.js tokens (`YYYY`, `YY`,
+`Q`, `MMMM`, `MMM`, `MM`, `M`, `DD`, `D`, `DDDD`, `dddd`, `ddd`, `GGGG`,
+`gggg`, `WW`, `W`, `ww`, `w`, `E`, `e`; `[text]` is a literal). Weeks are
+always ISO weeks. A bare `{{date}}` uses the period's default format, and
+`.md` is appended if the pattern doesn't end with it. Folders may be part
+of the format, e.g. `Journal/{{date:YYYY}}/{{date:MM-DD}}.md`. When the
+note for a date doesn't exist, `get_periodic_note_tool` returns
+`exists: false`, `suggested_path`, the template it would preview (or
+`null`) and a `hint` — it never creates the note itself, and the hint says
+when the path comes from the default pattern (the vault may not use
+periodic notes at all).
+
+**Orphan excludes**: an entry without `/` matches a folder of that name at
+any depth (the historical behaviour: `Journal` also skips
+`Areas/Journal/`); an entry containing `/` is a rooted prefix
+(`(400) Personal/Temporary`). Matching ignores case and Unicode
+normalisation (NFC/NFD). Setting `ORPHAN_EXCLUDES` replaces the default
+list; an explicit `exclude_folders` argument replaces it for that call.
+
+**Conventions**: if the file at `CONVENTIONS_PATH` is missing or empty,
+`get_vault_conventions_tool` returns `source: "auto-generated"` with a
+structural summary (top-level folders and note counts, entry note or the
+most-linked note, frontmatter fields and how many notes have frontmatter,
+attachment count, layout settings) instead of an empty string; a real file
+returns `source: "file"`. The summary contains paths and counts only, never
+note text, and is computed over what the caller may read.
+
+All layout values are vault-relative paths validated at startup by the same
+normaliser as the path-policy rules: absolute paths and `..` escapes stop
+the server with a configuration error. Spaces, parentheses and accents are
+fine. Layout settings never grant access — reads still go through the
+read/deny policy. When `DENY_WRITE_PATHS` is unset, its default protects
+the configured `CONVENTIONS_PATH` instead of `_AI_INSTRUCTIONS.md`; if you
+set `DENY_WRITE_PATHS` explicitly, include the conventions file yourself.
+
+In multi-vault mode the same settings are per-vault keys in `vaults.json`
+(see [Multi-Vault](multi-vault.md#vault-layout)).
+
+A per-vault `.obsidian-mcp.json` file inside the vault is deliberately not
+supported: the vault is content the AI (and every synced device) can edit,
+so server behaviour stays in the environment / `vaults.json`.
+
+### Notes without frontmatter
+
+`query_notes_tool` and `list_notes_tool(include_meta=True)` report
+`created` from the frontmatter when present, otherwise from the file's
+birth time (where the OS exposes one) or its mtime, with
+`created_source: "frontmatter" | "birthtime" | "mtime"`; `sort_by="created"`
+uses the same value. Mtime-based values are local ISO datetimes, and after
+a sync they reflect when the file was last written on this server, not
+when the note was first written. `query_notes_tool` also filters without
+frontmatter: `title_contains` (title or filename, case- and
+accent-insensitive), `path_glob` (fnmatch, `*` also matches `/`),
+`mtime_after` / `mtime_before` (ISO date or datetime, inclusive; a date
+covers the whole day), `min_words`, and `has_tasks`.
+
 ## Optional tool groups
 
 ```env

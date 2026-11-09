@@ -8,6 +8,7 @@ from ..config import get_config
 from ..domain.index import VaultIndex
 from ..storage.filesystem import VaultStorage
 from ..storage.locking import acquire_lock
+from ..storage.policy import VaultPathError
 from ..storage.revisions import prepare_full_write, revision_result
 
 # Matches {{variable}} and {{variable:format}}
@@ -24,6 +25,7 @@ def create_from_template(
 ) -> dict:
     """Render a template and write the result as a new note.
 
+    template_path may be a vault path or a name relative to TEMPLATES_DIR.
     Built-in variables: date, time, title, week, month, month_num, year, weekday.
     Custom variables in the `variables` dict override built-ins.
     Supports date format specs: {{date:YYYY-MM}} → formatted date string.
@@ -43,6 +45,7 @@ def create_from_template(
         storage, output_path, expected_revision, create_only
     )
 
+    template_path = resolve_template_path(storage, template_path)
     raw_template = storage.read_text(template_path)
 
     now = datetime.now()
@@ -105,15 +108,58 @@ def create_from_template(
     }, revision)
 
 
-def list_templates() -> list[str]:
-    """List all template files in the Templates/ folder."""
+def resolve_template_path(storage: VaultStorage, template_path: str) -> str:
+    """Return template_path as given if it exists, else try it relative to
+    the configured templates folder (with ``.md`` appended if missing)."""
+    if storage.exists(template_path):
+        return template_path
+    templates_dir = get_config().layout.templates_dir
+    candidates = [f"{templates_dir}/{template_path}"]
+    if not template_path.lower().endswith(".md"):
+        candidates += [f"{template_path}.md", f"{templates_dir}/{template_path}.md"]
+    for candidate in candidates:
+        try:
+            if storage.exists(candidate):
+                return candidate
+        except (VaultPathError, PermissionError):
+            continue
+    return template_path
+
+
+def list_templates_info() -> dict:
+    """{items, templates_dir, hint?}: Markdown files under the configured
+    templates folder. A missing folder yields an empty list plus a hint."""
     cfg = get_config()
+    layout = cfg.layout
     storage = VaultStorage.from_config(cfg)
+    result: dict = {"templates_dir": layout.templates_dir}
     try:
-        return sorted(
+        exists = storage.exists(layout.templates_dir)
+    except (VaultPathError, PermissionError):
+        exists = False
+    if not exists:
+        source = "TEMPLATES_DIR" if layout.is_configured("templates_dir") else "the default"
+        result["items"] = []
+        result["hint"] = (
+            f"Templates folder {layout.templates_dir!r} (from {source}) does not exist "
+            "in this vault, so there are no templates. Write notes directly instead; "
+            "the server admin can point TEMPLATES_DIR (or templates_dir in vaults.json) "
+            "at the vault's template folder."
+        )
+        return result
+    try:
+        result["items"] = sorted(
             p.relative
-            for p in storage.list_files("Templates")
+            for p in storage.list_files(layout.templates_dir)
             if p.relative.lower().endswith(".md")
         )
-    except (FileNotFoundError, NotADirectoryError):
-        return []
+    except (FileNotFoundError, NotADirectoryError, PermissionError, VaultPathError):
+        result["items"] = []
+    if not result["items"]:
+        result["hint"] = f"Templates folder {layout.templates_dir!r} contains no .md files."
+    return result
+
+
+def list_templates() -> list[str]:
+    """List all template files in the configured templates folder."""
+    return list_templates_info()["items"]

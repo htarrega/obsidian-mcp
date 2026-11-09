@@ -8,8 +8,10 @@ from typing import Any
 from ..config import get_config
 from ..domain.index import VaultIndex
 from ..domain.parser import parse_note
+from ..layout import PERIOD_TEMPLATE_NAMES, path_in_folders, render_periodic_path, same_path
 from ..storage.filesystem import VaultStorage
 from .scoping import ReadScope
+from .vault_layout import NoteFilters, created_info, read_conventions_file
 
 
 def _load_note(vault_path, note_path: str):
@@ -30,13 +32,8 @@ def get_backlinks(path: str, index: VaultIndex) -> list[str]:
 
 
 def get_vault_conventions() -> str:
-    cfg = get_config()
-    storage = VaultStorage.from_config(cfg)
-    try:
-        raw = storage.read_text("_AI_INSTRUCTIONS.md")
-    except (FileNotFoundError, PermissionError):
-        return ""
-    return raw
+    """Raw text of the configured conventions file (CONVENTIONS_PATH), or ""."""
+    return read_conventions_file()
 
 
 def get_broken_links(index: VaultIndex) -> list[dict]:
@@ -53,13 +50,21 @@ def get_broken_links(index: VaultIndex) -> list[dict]:
     return results
 
 
-def get_orphans(index: VaultIndex, exclude_folders: list[str] | None = None) -> list[str]:
-    exclude_folders = exclude_folders or []
+def get_orphans(
+    index: VaultIndex,
+    exclude_folders: list[str] | None = None,
+    entry_note: str | None = None,
+) -> list[str]:
+    """exclude_folders: single-segment names match at any depth, entries with
+    '/' are rooted prefixes (case/Unicode-insensitive). entry_note is never
+    reported."""
+    excluded = tuple(exclude_folders or ())
     scope = ReadScope.current()
     orphans = []
     for note_path in _readable_notes(index, scope):
-        parts = Path(note_path).parts
-        if any(part in exclude_folders for part in parts):
+        if excluded and path_in_folders(note_path, excluded):
+            continue
+        if same_path(note_path, entry_note):
             continue
         # Only visible backlinks count: an invisible one would otherwise
         # reveal that some unreadable note links here.
@@ -245,31 +250,14 @@ def get_periodic_note(index: VaultIndex, period: str = "daily", date_str: str = 
     else:
         target = date.fromisoformat(date_str)
 
-    iso_cal = target.isocalendar()
-
-    if period == "daily":
-        note_id = target.isoformat()
-        rel_path = f"Journal/{note_id}.md"
-        template_name = "Daily-Note-Template.md"
-    elif period == "weekly":
-        note_id = f"{iso_cal[0]}-W{iso_cal[1]:02d}"
-        rel_path = f"Journal/Weekly/{note_id}.md"
-        template_name = "Weekly-Note-Template.md"
-    elif period == "monthly":
-        note_id = target.strftime("%Y-%m")
-        rel_path = f"Journal/Monthly/{note_id}.md"
-        template_name = "Monthly-Note-Template.md"
-    elif period == "quarterly":
-        q = (target.month - 1) // 3 + 1
-        note_id = f"{target.year}-Q{q}"
-        rel_path = f"Journal/Quarterly/{note_id}.md"
-        template_name = "Quarterly-Note-Template.md"
-    elif period == "yearly":
-        note_id = str(target.year)
-        rel_path = f"Journal/Yearly/{note_id}.md"
-        template_name = "Yearly-Note-Template.md"
-    else:
+    if period not in PERIOD_TEMPLATE_NAMES:
         raise ValueError(f"Unknown period {period!r}. Use: daily|weekly|monthly|quarterly|yearly")
+    layout = cfg.layout
+    pattern = layout.periodic_pattern(period)
+    configured = layout.is_configured(f"periodic.{period}")
+    rel_path = render_periodic_path(pattern, period, target)
+    note_id = Path(rel_path).stem
+    template_name = PERIOD_TEMPLATE_NAMES[period]
 
     storage = VaultStorage.from_config(cfg)
     target = storage.resolve_read(rel_path)
@@ -281,6 +269,8 @@ def get_periodic_note(index: VaultIndex, period: str = "daily", date_str: str = 
             "period": period,
             "date": note_id,
             "exists": True,
+            "pattern": pattern,
+            "configured": configured,
             "content": note.content,
             "frontmatter": note.frontmatter,
             "tasks": [{"text": t.text, "done": t.done, "line": t.line} for t in note.tasks],
@@ -288,14 +278,27 @@ def get_periodic_note(index: VaultIndex, period: str = "daily", date_str: str = 
 
     # Preview from template if available
     content = ""
-    template_rel = f"Templates/{template_name}"
+    template_rel: str | None = f"{layout.templates_dir}/{template_name}"
     try:
         raw_tpl = storage.read_text(template_rel)
         content = raw_tpl.replace("{{date}}", note_id).replace("{{title}}", note_id)
-    except (FileNotFoundError, PermissionError):
-        pass
+    except (FileNotFoundError, PermissionError, IsADirectoryError, OSError):
+        template_rel = None
 
+    env_name = f"PERIODIC_{period.upper()}_PATH"
+    hint = (
+        f"No {period} note at {rel_path}. Create it there (e.g. with write_note_tool) "
+        "if the user wants one."
+    )
+    if not configured:
+        hint += (
+            f" The path comes from the default pattern {pattern!r}; this vault may not "
+            f"use {period} notes — the server admin can set {env_name} "
+            f"(or periodic.{period} in vaults.json)."
+        )
     return {"path": rel_path, "period": period, "date": note_id, "exists": False,
+            "suggested_path": rel_path, "pattern": pattern, "configured": configured,
+            "template": template_rel, "hint": hint,
             "content": content, "frontmatter": {}, "tasks": []}
 
 
@@ -347,9 +350,17 @@ def query_notes(
     sort_desc: bool = False,
     limit: int = 50,
     folder: str = "",
+    title_contains: str | None = None,
+    path_glob: str | None = None,
+    mtime_after: str | None = None,
+    mtime_before: str | None = None,
+    min_words: int | None = None,
+    has_tasks: bool | None = None,
 ) -> list[dict]:
     """Filter notes by tags, status, or arbitrary frontmatter fields.
-    sort_by: 'path' | 'title' | 'created' | 'mtime'.
+    sort_by: 'path' | 'title' | 'created' | 'mtime'. ``created`` falls back
+    to the file's birth time/mtime when frontmatter has none
+    (``created_source`` says which).
     frontmatter_filter values may be a plain value (exact match) or an
     operator dict: {"$ne": v}, {"$eq": v}, {"$in": [...]}, {"$nin": [...]},
     {"$exists": True|False}."""
@@ -360,11 +371,26 @@ def query_notes(
 
     if frontmatter_filter:
         matches_frontmatter_filter({}, frontmatter_filter)  # validate operators up front
+    filters = NoteFilters(
+        title_contains=title_contains,
+        path_glob=path_glob,
+        mtime_after=mtime_after,
+        mtime_before=mtime_before,
+        min_words=min_words,
+        has_tasks=has_tasks,
+    )
 
     for note_path in all_notes:
         if folder and not note_path.startswith(folder.rstrip("/") + "/"):
             continue
+        if not filters.matches_path(note_path):
+            continue
         try:
+            full = storage.resolve_read(note_path)
+            stat_result = storage.stat(full.relative) if storage.exists(full.relative) else None
+            mtime = stat_result.st_mtime if stat_result is not None else 0.0
+            if not filters.matches_mtime(mtime):
+                continue
             note = _load_note(cfg.vault_path, note_path)
 
             if tags and not all(t in note.tags for t in tags):
@@ -382,14 +408,19 @@ def query_notes(
             ):
                 continue
 
-            full = storage.resolve_read(note_path)
+            title = note.frontmatter.get("title", Path(note_path).stem)
+            if filters.active and not filters.matches_note(note_path, title, note):
+                continue
+
+            created, created_source = created_info(note.frontmatter, stat_result)
             results.append({
                 "path": note_path,
-                "title": note.frontmatter.get("title", Path(note_path).stem),
+                "title": title,
                 "tags": note.tags,
                 "status": note_status,
-                "created": str(note.frontmatter.get("created", "")),
-                "mtime": storage.stat(full.relative).st_mtime if storage.exists(full.relative) else 0.0,
+                "created": created,
+                "created_source": created_source,
+                "mtime": mtime,
                 "frontmatter": note.frontmatter,
                 "inline_fields": note.inline_fields,
             })
@@ -398,7 +429,7 @@ def query_notes(
 
     _sort_keys: dict[str, Any] = {
         "path": lambda x: x["path"],
-        "title": lambda x: x["title"].lower(),
+        "title": lambda x: str(x["title"]).lower(),
         "created": lambda x: x["created"],
         "mtime": lambda x: x["mtime"],
     }

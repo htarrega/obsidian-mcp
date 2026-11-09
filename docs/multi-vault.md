@@ -30,6 +30,27 @@ discovery/indexing; the read/write/deny fields are the access-control
 boundary. A single identity can additionally be given a narrower view of one
 of its vaults — see [Per-Identity Path Policy](#per-identity-path-policy).
 
+### Vault layout
+
+Each vault entry can also describe its own layout (all optional; absent keys
+keep the defaults, see [Configuration → Vault layout](configuration.md#vault-layout)):
+
+```json
+"mentat": {
+  "path": "/vaults/mentat",
+  "templates_dir": "(000) System/Templates",
+  "periodic": {"daily": "(400) Personal/Journal/{{date:YYYY-MM-DD}}.md"},
+  "orphan_excludes": ["(000) System", "(100) Attachments", "(400) Personal"],
+  "entry_note": "(500) Root/Mentat.md",
+  "conventions_path": "(000) System/_AI_INSTRUCTIONS.md"
+}
+```
+
+`periodic` accepts `daily`, `weekly`, `monthly`, `quarterly` and `yearly`.
+These are the JSON equivalents of `TEMPLATES_DIR`, `PERIODIC_<PERIOD>_PATH`,
+`ORPHAN_EXCLUDES`, `ENTRY_NOTE` and `CONVENTIONS_PATH`, which are ignored
+in multi-vault mode. Paths are validated like path-policy rules.
+
 ```env
 VAULT_PATH=              # unused — vaults.json defines paths instead
 VAULTS_CONFIG=/data/vaults.json
