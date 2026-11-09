@@ -309,15 +309,44 @@ def test_instructions_never_mention_a_removed_tool(removed):
     assert removed not in server._DEFAULT_INSTRUCTIONS
 
 
-def test_every_registered_tool_is_documented():
-    """The opt-in format groups aren't module attributes when their flag is
-    off, so this checks the other direction: nothing registered goes
-    undocumented."""
-    registered = {
-        name
+def test_instructions_only_mention_tools_that_exist():
+    """The instructions are deliberately short (tool docstrings carry the
+    details), but every tool they do name must be a real tool."""
+    documented = _documented_tool_names()
+    assert documented, "sanity: the instructions name a few starting tools"
+    missing = {name for name in documented if not callable(getattr(server, name, None))}
+    assert not missing, f"instructions mention unknown tools: {sorted(missing)}"
+
+
+def test_instructions_are_short_and_convention_neutral():
+    text = server._DEFAULT_INSTRUCTIONS
+    assert len(text) < 4000
+    assert "get_vault_conventions_tool" in text
+    assert "expected_revision" in text
+    for opinion in ("tags: [", "status: active", "Journal/", "category/sub"):
+        assert opinion not in text
+
+
+def test_every_registered_tool_has_a_docstring():
+    registered = [
+        getattr(server, name)
         for name in dir(server)
         if name.endswith("_tool") and callable(getattr(server, name))
-    }
-    assert registered, "sanity: the server should expose some tools"
-    undocumented = registered - _documented_tool_names()
-    assert not undocumented, f"registered but undocumented: {sorted(undocumented)}"
+    ]
+    assert registered
+    assert all((tool.__doc__ or "").strip() for tool in registered)
+
+
+def test_layout_instructions_only_mention_configured_periodic_and_templates():
+    from obsidian_mcp.layout import layout_from_env
+
+    assert server._layout_instructions(layout_from_env({})) == ""
+    configured = layout_from_env({
+        "PERIODIC_DAILY_PATH": "Daily/{{date:YYYY-MM-DD}}.md",
+        "TEMPLATES_DIR": "Meta/Templates",
+    })
+    text = server._layout_instructions(configured)
+    assert "Daily/{{date:YYYY-MM-DD}}.md" in text
+    assert "get_periodic_note_tool" in text
+    assert "Meta/Templates/" in text
+    assert "weekly" not in text

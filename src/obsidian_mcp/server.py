@@ -188,331 +188,78 @@ def _write_envelope(
     return write_result(path, verb, revision=revision, data=payload, meta=extra)
 
 
-_DEFAULT_INSTRUCTIONS = r"""\
-You are connected to **obsidian-mcp**, an MCP server for an Obsidian vault.
+_DEFAULT_INSTRUCTIONS = """\
+You are connected to obsidian-mcp, a server for one or more Obsidian vaults.
 
-## Multiple Vaults
-Call `list_vaults_tool()` first, before anything else. If it returns more
-than one vault, this identity has access to several completely separate
-ones — figure out from what the user is asking which one they mean (a
-vault's `description` is there to help with that), and pass `vault=<name>`
-on every other tool call where it matters. Leaving `vault` out uses
-whichever entry has `is_default: true` — fine when the user's request
-doesn't point at a specific one, wrong if they clearly mean the
-non-default vault. There's no server-side memory of which vault you picked
-last time; pass `vault=` again on each subsequent call in the same
-conversation, the same way you already repeat `path=` on each call. If
-`list_vaults_tool()` returns exactly one vault, ignore all of this — there's
-nothing to choose between.
+## Start here
+1. Call `get_vault_conventions_tool()` and follow the vault's own conventions
+   (folder layout, naming, where new notes go, how notes are linked). With
+   `source: "file"` they come from the vault's conventions file; with
+   `source: "auto-generated"` they are a summary derived from the vault, so
+   look at a few existing notes before writing. Do not introduce structure
+   the vault does not already use (frontmatter, tags, headings, templates).
+2. If `list_vaults_tool()` returns more than one vault, pick the one the user
+   means and pass `vault=<name>` on every call (there is no server-side
+   memory of the choice). With a single vault, ignore `vault`.
+3. Search (`search_notes_tool`) before creating a note, to avoid duplicates.
 
-## Vault Conventions
-Call `get_vault_conventions_tool()` first. With `source: "file"` it is the vault's own
-conventions file (folder structure, tag schema, naming rules). With
-`source: "auto-generated"` it is a summary derived from the vault (folders, frontmatter
-usage, entry note); explore further with `list_folder_tool()` and `list_notes_tool()`
-before writing anything.
-Always use `search_notes_tool` or `query_notes_tool` before creating notes to avoid duplicates.
+Notes are addressed by vault path (`Folder/Note.md`); read-only note tools
+also accept a bare note name and resolve it like a [[wikilink]]. Obsidian
+shows the file name as the title, so don't start a note with a `# Heading`
+that repeats it.
 
-Obsidian uses the **filename** (without `.md`) as the note title in the UI, graph,
-and default wikilink text. Do **not** start a note with a level-1 heading that
-repeats the filename. Put the first heading at `##` or below only if the body
-needs structure; many notes need no heading at all.
+## Results
+Every tool returns `{success, path?, revision?, data, meta?}`. Listings put
+rows in `data.items`; `meta` carries counts, truncation and, on writes,
+`action`/`dry_run`. Real failures (bad path, permission denied, revision
+conflict) come back as MCP errors.
 
-## Tool Reference
+## Writing safely
+- Reads return a `revision`. Pass it as `expected_revision` to pin a write to
+  the bytes you read. On a `revision_conflict`, read again before retrying;
+  a blind retry of an append or prepend can add the text twice.
+- If the server requires it (`precondition_required`), overwriting an
+  existing note needs that `expected_revision`; creating a new note does not.
+- Tools with `dry_run` preview into `data.preview`/`data.diff` and write
+  nothing; check, then call again with `dry_run=false`.
+- A write denied by the server's policy (read-only mode, protected folders)
+  is final: don't work around it by writing somewhere else unless the user
+  asks.
+- Address one task with `set_task_status_tool(path, line, done,
+  expected_text)` using the `line` and `text` from `get_tasks_tool` or
+  `read_note_tool`; it refuses stale lines.
 
-### Result Shape
-Every tool returns one JSON object with the same outer shape, so you never
-have to guess how a particular tool replies:
-
-    {"success": true, "path": "...", "revision": "sha256:...",
-     "data": {...}, "meta": {...}}
-
-- `success` is always a boolean. `path` is there for single-item results and
-  omitted for vault-wide and list results.
-- `data` is the tool-specific payload, and is always present. A listing puts
-  its rows in `data.items`; per-tool `data` keys are named in each tool's own
-  description.
-- `meta` is only present when there's something to say — `count` and
-  `truncated` on a listing, `action` and `dry_run` on a write.
-- `revision` comes back on every read and every successful write; pass it as
-  `expected_revision` on a later write to pin that write to the bytes you
-  read (see "### Writing").
-- A batch tool reports per-item outcomes in `data.results`
-  (`{success, path, revision}` or `{success: false, path, error}`, where
-  `error.type` is the exception class name) and tallies them in
-  `data.summary`. Top-level `success` only says the batch ran — always check
-  `data.summary.failed`.
-- Real failures (bad path, permission denied, revision conflict) come back as
-  MCP errors, not as `success: false`.
-
-### Reading & Search
-- `list_notes_tool(folder, include_meta)` — list notes; include_meta=True adds title/tags/status/mtime
-- `list_files_tool(folder, extension)` — list every file (any type, not just notes), optional extension filter
-- `read_note_tool(path, mode, depth)` — one note at the detail you need.
-  mode: 'full' (default; content, frontmatter, tags, wikilinks, tasks,
-  inline_fields) | 'outline' (headings, block refs, frontmatter keys — no body
-  text, so reach for it on large notes) | 'rendered' (![[embed]]
-  transclusions resolved inline; `depth` applies here only, 0=raw, 1=one
-  level, 2=nested)
-- `search_notes_tool(query, tag, mode, limit, frontmatter_filter, field, threshold, max_snippets_per_note,
-  context_lines)` — full-text search with snippets (default 2 per note, 1 line of context, merged
-  windows); mode: exact|regex|fuzzy (exact/fuzzy ignore case and accents); field: None|'filename';
-  combine with frontmatter_filter in one call
-- `get_outline_tool(path)` — headings with level and line; `get_outgoing_links_tool(path)` —
-  resolved/broken outgoing links; `get_recent_notes_tool(limit, folder)` — recently modified notes
-- `find_similar_notes_tool(text, limit, exclude_path, min_score)` — TF-IDF similarity search for
-  duplicate prevention ("does this topic already exist under different wording?")
-- `lint_schema_tool()` — validate frontmatter against the enums declared in _AI_INSTRUCTIONS.md
-
-### Writing
-- Direct reads return an opaque `revision`. Pass it as `expected_revision` to pin a write
-  to those bytes. On a revision conflict, read again before deciding whether to retry.
-  A retried append with an old revision fails safely; a blind retry can append twice.
-- Every `dry_run` tool previews into `data.preview`/`data.diff` and writes nothing;
-  check it, then call again with dry_run=False.
-- `write_note_tool(path, content, dry_run)` — create or overwrite a note; preserves existing
-  frontmatter if the new content has none
-- `patch_note_tool(path, section, new_content, mode, target_type, dry_run)` — edit one section;
-  mode: replace|insert_before|insert_after|append — target_type: heading|block_ref
-- `patch_note_text_tool(path, find, replace, mode, count, dry_run)` — find/replace anywhere in a
-  note's body, no heading/block-ref anchor required
-- `append_to_note_tool(path, content, section, create)` — append to end or under a heading
-- `prepend_to_note_tool(path, content)` — insert at the top of the body
-- `set_task_status_tool(path, line, done, expected_text)` — check/uncheck one task line
-- `patch_frontmatter_tool(path | paths, updates, merge_arrays, dry_run)` — update YAML keys
-  without touching the body; pass `paths=[...]` to apply the same updates to several
-  notes in one call, which returns the batch envelope (check `data.summary.failed`)
-- `manage_tags_tool(path, add, remove)` — add/remove tags in frontmatter and inline
-- `delete_tool(path, trash)` — delete a note or a folder, whichever `path` is;
-  trash=True (default) moves it to .trash/
-- `restore_tool(trashed_name, to_path)` — undo a trashed delete of either;
-  trashed_name from list_trash_tool
-- `move_note_tool(from_path, to_path)` — rename/move + rewrites all wikilinks vault-wide
-- `find_replace_in_vault_tool(search, replace, mode, folder, dry_run)` — bulk find/replace across
-  every note; dry_run=True (default) previews matches before writing anything
-
-High-impact mutation tools are disabled by default and absent from the tool
-list until explicitly enabled: `ENABLE_DELETE` registers delete_tool/
-restore_tool/list_trash_tool,
-`ENABLE_MOVE` registers note moves, `ENABLE_FOLDER_RENAME` registers folder
-renames, and `ENABLE_BULK_REPLACE` registers bulk replacement.
-
-### Folders
-- `list_folder_tool(path, recursive, max_depth)` — contents (path="" = vault root); hides dotfiles;
-  recursive=True returns a full tree dump in one call; folders cut by max_depth carry
-  truncated=true + children_count
-- `create_folder_tool(path)` — create folder, parents auto-created
-- `rename_folder_tool(from_path, to_path)` — rename + rewrites path-based wikilinks
-- `list_trash_tool()` — see what's sitting in .trash/, with the names restore_tool expects
-
-### Querying & Graph
-- `query_notes_tool(tags, status, frontmatter_filter, inline_field_filter, sort_by, limit, folder)` —
-  Dataview-like filter; frontmatter_filter values may be exact or an operator dict
-  ($ne/$eq/$in/$nin/$exists)
-- `get_backlinks_tool(path)` — notes that link to this note
-- `get_broken_links_tool()` — wikilinks/embeds resolving to no file, with
-  kind (note|attachment) and a suggested existing path
-- `get_orphans_tool(exclude_folders)` — notes with no incoming backlinks
-- `get_link_graph_tool(root, depth, direction)` — BFS link graph; direction: outgoing|incoming|both
-- `get_audit_log_tool(path, tool, since, limit)` — write-action audit trail
-  (what changed, when, with which tool), most recent first; pass `path=` to
-  get the history of one note
-- `get_vault_stats_tool()` — note/link counts, orphans, most_linked: [{path, backlinks}]
-- `get_tasks_tool(status, folder, tag, limit, offset, dedupe, group_by, exclude_folders,
-  path_glob, summary_only)` — tasks across vault, paged (meta.total/truncated);
-  status: open|done|all; dedupe collapses repeated worklog tasks
-- `list_all_tags_tool(sort_by, mode)` — every tag; mode: 'flat' (default,
-  with counts) | 'tree' (nested by slash hierarchy). To list the notes
-  carrying one tag, use `query_notes_tool(tags=[tag])`
-- `get_periodic_note_tool(period, date)` — periodic notes;
-  period: daily|weekly|monthly|quarterly|yearly, date: today|yesterday|YYYY-MM-DD
-- `resolve_alias_tool(name)` — alias, stem or attachment name → canonical vault path
-
-### Multi-Vault
-- `list_vaults_tool()` — vault(s) the current identity may access, as
-  `data.items` of {name, description, is_default}. Every other tool accepts an
-  optional `vault=<name>` argument to operate on a non-default one for that call.
-
-### Attachments
-- `list_attachments_tool(folder)`, `read_attachment_tool(path)`, `add_attachment_tool(path, content_base64)`
-- For large/many binary files, `create_attachment_token_tool(path, method, expires_in)` mints a short-lived,
-  single-file token, then `GET`/`PUT /attachments/{path}?exp=&sig=` reads/writes raw bytes directly on disk
-  — no base64, no MCP tool-call channel, and no need to ever expose the server's master API_KEY.
-
-### Templates
-- `list_templates_tool()`, `create_from_template_tool(template_path, output_path, variables)`
-- Built-in variables: `{{date}}`, `{{title}}`, `{{week}}`, `{{month}}`, `{{year}}`, `{{weekday}}`, `{{time}}`
-
-The Canvas/Kanban/Excalidraw/Bases tool groups below are each opt-in on the
-server (`ENABLE_CANVAS`/`ENABLE_KANBAN`/`ENABLE_EXCALIDRAW`/`ENABLE_BASES`).
-If a tool from one of these groups isn't in your tool list, the operator
-hasn't enabled it — that's expected, not an error; don't retry or assume it's
-broken.
-
-### Canvas (.canvas files)
-- `list_canvases_tool()`, `read_canvas_tool(path)`
-- `write_canvas_tool(path, nodes, edges)` — node types: text|file|group|link
-- `patch_canvas_tool(path, add_nodes, update_nodes, delete_node_ids, add_edges, delete_edge_ids)`
-
-### Kanban (Obsidian Kanban plugin)
-- `read_kanban_tool(path)`, `create_kanban_board_tool(path, columns)`
-- `add_kanban_card_tool(path, column, text, done)`, `move_kanban_card_tool(...)`, `delete_kanban_card_tool(...)`
-
-### Excalidraw (*.excalidraw.md, Obsidian Excalidraw plugin)
-- `list_excalidraw_tool()`, `read_excalidraw_tool(path)`
-- `write_excalidraw_tool(path, elements, app_state)` — element types: rectangle|ellipse|text|arrow|freedraw|...
-- `patch_excalidraw_tool(path, add_elements, update_elements, delete_element_ids)`
-
-### Bases (.base files, Obsidian core plugin since 1.9.0)
-- `list_bases_tool()`, `read_base_tool(path)`
-- `write_base_tool(path, filters, formulas, properties, views)` — `data.known_properties`
-  collects property names already used by other bases, to keep naming consistent
-- `patch_base_tool(path, update_formulas, delete_formula_keys, update_properties, delete_property_keys, set_filters, add_views, update_views, delete_view_names)`
-
-## MCP Resources
-- `vault://notes/{path}` — raw note content as context
-- `vault://stats` — live vault statistics
-- `vault://tags` — all tags with counts
-
-## MCP Prompts
-- `weekly_review` — summarize the past week: overdue/due-soon tasks, daily note highlights
-- `daily_note(date)` — open or create a daily note, carrying over yesterday's open tasks
-
----
-
-## Obsidian Markdown Syntax
-
-### Frontmatter
-```yaml
----
-title: Note Title
-aliases: [Short Name, Other Alias]
-tags: [category/sub, other-tag]
-status: active
-created: 2026-01-01
----
-```
-
-### Headings
-Use `##`, `###`, `####` inside notes. Avoid `#` — it's the implicit document title level.
-
-### Wikilinks
-| Syntax | Meaning |
-|---|---|
-| `[[Note Name]]` | link by filename stem |
-| `[[Note Name\|Display Text]]` | link with alias |
-| `[[Note Name#Heading]]` | link to heading |
-| `[[Note Name^block-id]]` | link to block |
-| `![[Note Name]]` | embed/transclude note |
-
-Links are case-insensitive and alias-aware. Prefer stem links (`[[Note]]` not `[[Folder/Note]]`) — they survive folder renames.
-
-### Block References
-```
-Important paragraph. ^my-block-id
-```
-Reference with `[[Note^my-block-id]]`. IDs: lowercase letters, digits, hyphens.
-
-### Tags
-- Frontmatter: `tags: [category/sub]`
-- Inline: `#category/sub`
-- Nested with `/` for hierarchy.
-
-### Tasks
-```markdown
-- [ ] Open task
-- [x] Done task
-- [ ] Tasks-plugin syntax: 📅 2026-08-10 due, 🔁 every week recurring, ⏫/🔼/🔽 priority
-- [x] Done with a date ✅ 2026-08-01
-```
-Emoji markers are parsed out of `text` into their own fields (`due`, `recurrence`,
-`priority`, `done_date`) by `read_note_tool`/`get_tasks_tool` — `text` itself
-stays clean of the markers.
-
-### Callouts
-```markdown
-> [!NOTE] Title
-> Content.
-
-> [!WARNING], [!TIP], [!IMPORTANT], [!QUESTION] also supported.
-```
-
-### Dataview Inline Fields
-```
-rating:: 8
-due date:: 2026-08-01
-```
-Accessible via `read_note_tool` → `inline_fields`, filterable in `query_notes_tool`.
-
----
-
-## Supported Plugin Formats
-
-Each format below is only available if its tool group is enabled on the
-server (see the note at the top of "## Tool Reference"). Pick the right
-format for the job — they overlap in what they *can* represent, but each has
-a format it's the natural fit for:
-
-### Kanban
-Frontmatter `kanban-plugin: basic`, columns as `## Name`, cards as `- [ ] text`.
-Always use the kanban tools instead of editing raw Markdown.
-Use it for column-based task workflows (To-do/Doing/Done, sprint boards).
-For a simple checklist inside one note, plain `- [ ]` tasks via
-`patch_note_tool` are lighter — don't reach for a Kanban board just to track
-a handful of to-dos.
-
-### Canvas
-`.canvas` files: JSON with `nodes` (text/file/group/link) and `edges`. IDs auto-generated.
-Use it for spatial/visual relationships between notes (mind maps, linking
-diagrams, freeform boards). It's not a replacement for ordinary links — if
-all you need is "which notes relate to this one", wikilinks or
-`get_link_graph_tool` are the lighter tool.
-
-### Excalidraw
-`*.excalidraw.md` files: frontmatter `excalidraw-plugin: parsed`, drawing scene
-(`elements`/`appState`/`files`) embedded as JSON in a `## Drawing` code block.
-Always use the excalidraw tools instead of editing raw Markdown — the
-surrounding file structure (warning banner, `## Text Elements` section) is
-regenerated on every write and not meaningful to edit by hand.
-Use it for freehand sketches/diagrams that go beyond boxes-and-arrows (e.g.
-architecture sketches). For structured node-and-edge relationships, prefer
-Canvas instead.
-
-### Bases
-`.base` files: plain YAML (not JSON, no frontmatter wrapper) with up to four
-top-level keys — `filters` (boolean and/or/not tree of comparisons and
-function calls like `file.hasTag("book")`), `formulas` (name -> expression),
-`properties` (per-property `displayName`), `views` (list of
-`{type, name, limit, filters, order, groupBy, summaries}`, `type` required —
-e.g. `table`|`cards`|`list`). A Base never changes notes — it only defines a
-filtered/grouped/sorted *view* over existing frontmatter properties.
-Use it when the user wants a table/cards/list overview across multiple notes
-that share frontmatter properties (e.g. "show me all open projects", "table
-of recipes grouped by category") — not for editing a single note (use
-`patch_note_tool`/`patch_frontmatter_tool` for that) and not as a substitute
-for tags or links.
-Before creating a new Base, call `list_bases_tool()`/`read_base_tool()` on
-existing `.base` files to reuse established property names — `write_base_tool`
-also returns `known_properties` collected from them, so use that rather than
-inventing new names. Before filtering/grouping by a property, check that it's
-written consistently across the target notes (e.g. via `query_notes_tool` or
-`get_vault_conventions_tool`) — inconsistent casing/values (`"offen"` vs.
-`"Offen"`) silently break filters. The server only validates that a `.base`
-file has the right overall shape (mapping/list types, `views[].type` present);
-it does not parse Obsidian's filter/formula expression grammar, so keep filter
-strings to the documented syntax (https://obsidian.md/help/bases/syntax) —
-a malformed expression won't be caught until the file is opened in Obsidian.
-Use `write_base_tool` for a new Base, `patch_base_tool` for a targeted change
-(add a view, adjust filters) instead of rewriting the whole file.
-
-### Dataview
-Only `key:: value` inline fields are parsed server-side. DQL block queries are Obsidian-app-only.
-
-### Periodic Notes
-Paths come from the server's per-vault layout config (default `Journal/YYYY-MM-DD.md`,
-`Journal/Weekly/YYYY-Www.md`, …). A missing note returns `exists: false` with
-`suggested_path`; don't create one unless the user wants it. Templates use `{{date}}`, `{{title}}`, `{{week}}` etc.
+Tools that are not in your tool list are disabled by the operator; that is
+expected, not an error.
 """
+
+
+def _layout_instructions(layout) -> str:
+    """A short note on periodic notes/templates, only when the operator
+    configured them for this vault (the defaults are not advertised)."""
+    periods = [
+        period
+        for period, pattern in layout.periodic
+        if layout.is_configured(f"periodic.{period}")
+    ]
+    lines = []
+    if periods:
+        patterns = ", ".join(
+            f"{period}: `{layout.periodic_pattern(period)}`" for period in periods
+        )
+        lines.append(
+            f"- Periodic notes ({patterns}): read them with "
+            "`get_periodic_note_tool(period, date)`; a missing one returns "
+            "`exists: false` and a `suggested_path`. Don't create one unless asked."
+        )
+    if layout.is_configured("templates_dir"):
+        lines.append(
+            f"- Templates live in `{layout.templates_dir}/`: "
+            "`list_templates_tool()`, `create_from_template_tool(...)`."
+        )
+    if not lines:
+        return ""
+    return "\n\n## Periodic notes and templates\n" + "\n".join(lines) + "\n"
 
 
 def _load_instructions() -> str:
@@ -527,15 +274,16 @@ def _load_instructions() -> str:
         # authenticated an identity and selected one of its allowed vaults.
         # Per-vault conventions remain available through the authorized tool.
         return _DEFAULT_INSTRUCTIONS
+    instructions = _DEFAULT_INSTRUCTIONS + _layout_instructions(cfg.layout)
     try:
         conventions_path = cfg.layout.conventions_path
         vault = VaultStorage.from_config(cfg).read_text(conventions_path)
     except (FileNotFoundError, PermissionError, VaultPathError, OSError):
         # Missing or unreadable optional instructions do not prevent startup;
         # descriptor/policy failures are not converted into unrestricted I/O.
-        return _DEFAULT_INSTRUCTIONS
+        return instructions
     return (
-        _DEFAULT_INSTRUCTIONS
+        instructions
         + f"\n\n# Vault-specific instructions ({conventions_path})\n\n"
         + vault
     )
@@ -1044,15 +792,9 @@ def find_similar_notes_tool(
     min_score: float = 0.1,
     vault: str | None = None,
 ) -> dict:
-    """Find conceptually related notes even when the wording differs — for
-    duplicate prevention before creating a new note ("does this topic
-    already exist under different vocabulary?"). Ranks by TF-IDF cosine
-    similarity over the vault's own vocabulary (a lightweight heuristic,
-    not a transformer embedding model — it catches shared distinctive
-    words across differently-phrased notes, not pure synonym rewrites).
-    exclude_path: skip a note (e.g. the one you're editing) from results.
-    min_score: filters out noise-level matches (0-1, higher = stricter).
-    data.items: [{path, score}], most similar first."""
+    """Notes similar to `text` (TF-IDF over the vault's vocabulary), e.g. to
+    spot a duplicate before creating a note. exclude_path skips one note;
+    min_score 0-1. data.items: [{path, score}], most similar first."""
     return list_result(
         find_similar_notes(text, _index, limit=limit, exclude_path=exclude_path, min_score=min_score)
     )
@@ -1070,13 +812,11 @@ def write_note_tool(
     create_only: bool = False,
     vault: str | None = None,
 ) -> dict:
-    """Write (create or overwrite) a note. Respects READ_ONLY and WRITE_PATHS.
-    If `content` has no frontmatter of its own and a note already exists at
-    `path`, its existing frontmatter is preserved rather than dropped —
-    check the returned `frontmatter_preserved` flag. The result also carries
-    a `diff` (unified diff against the current file).
-    dry_run=True previews {preview, diff, frontmatter_preserved} without
-    writing anything — check it, then call again with dry_run=False."""
+    """Create or overwrite a note with `content`. Overwriting may require
+    expected_revision (from a read); create_only=True refuses to overwrite.
+    Existing frontmatter is kept if `content` has none
+    (data.frontmatter_preserved). data.diff is the unified diff;
+    dry_run=True previews without writing."""
     result = write_note(
         path,
         content,
@@ -1134,13 +874,10 @@ def patch_note_text_tool(
     expected_revision: str | None = None,
     vault: str | None = None,
 ) -> dict:
-    """Find and replace text anywhere in one note's body — no heading/block-ref
-    anchor required, unlike patch_note_tool. Cheaper than write_note_tool for
-    a scattered single-note edit (e.g. bumping one enum value inside a long note).
-    mode: 'exact' (default, literal substring) | 'regex'.
-    count: max replacements (default 1, first match only); 0 = replace all.
-    dry_run=True previews {replacements, preview, diff} without writing.
-    Raises ValueError if `find` doesn't match anything."""
+    """Find and replace text in one note — the cheapest targeted edit.
+    mode: 'exact' (default) | 'regex'. count: max replacements (default 1;
+    0 = all). Fails if `find` does not match. dry_run=True previews
+    {replacements, preview, diff} without writing."""
     result = patch_note_text(
         path,
         find,
@@ -1488,25 +1225,18 @@ def get_audit_log_tool(
     limit: int = 50,
     vault: str | None = None,
 ) -> dict:
-    """Query the append-only log of write-tool activity (who/what changed,
-    not just the .trash/ state after the fact). Most recent first.
-    path/tool/since are optional filters (since: ISO timestamp, inclusive).
-    data.items is a list of {timestamp, tool, path, summary}. Covers the core note/folder
-    write tools; canvas/kanban/excalidraw/bases writes aren't logged yet."""
+    """Write-tool audit trail, most recent first. Optional filters: path,
+    tool, since (ISO timestamp, inclusive). data.items: [{timestamp, tool,
+    path, summary}]."""
     entries = get_audit_log(path=path, tool=tool, since=since, limit=limit)
     return list_result(entries, meta={"truncated": len(entries) >= limit})
 
 
 @mcp.tool()
 def list_vaults_tool() -> dict:
-    """List the vault(s) the current identity (API key or GitHub login) may
-    access. Returns [{name, description, is_default}]. Call this at the
-    start of a session whenever more than one vault comes back — pass
-    vault=<name> on any other tool to operate on a non-default one for that
-    single call; omit it to use whichever entry has is_default=true. In
-    single-vault mode (no VAULTS_CONFIG) this always returns exactly one
-    entry with is_default=true — there's nothing to choose between.
-    data.items: [{name, description, is_default}]."""
+    """Vaults this identity may access: data.items [{name, description,
+    is_default}]. With several, pass vault=<name> on other tools (omitted =
+    the default one)."""
     cfg = get_config()
     if not cfg.multi_vault:
         vault = cfg.vaults[cfg.default_vault_name]
@@ -1527,14 +1257,10 @@ def list_vaults_tool() -> dict:
 
 @mcp.tool()
 def lint_schema_tool(vault: str | None = None) -> dict:
-    """Validate every note's frontmatter against the enum fields declared in
-    the vault's conventions file (under a "Frontmatter Schema" heading,
-    e.g. `status: inbox | active | done | archived`). Returns
-    {schema, violations: [{path, field, found, expected_enum}]} — only the
-    deviations, not a full vault dump. A field that's simply missing on a
-    note isn't a violation, only a present value outside the declared enum
-    is. Returns an empty schema/violations pair (plus a hint if the file is
-    missing) when no enum schema can be parsed."""
+    """Check frontmatter values against the enums declared under a
+    "Frontmatter Schema" heading in the conventions file. data: {schema,
+    violations: [{path, field, found, expected_enum}]}; empty when the vault
+    declares no schema."""
     return read_result(None, lint_schema(_index))
 
 
@@ -1753,26 +1479,12 @@ def add_attachment_tool(path: str, content_base64: str, vault: str | None = None
 
 @mcp.tool()
 def create_attachment_token_tool(path: str, method: str = "PUT", expires_in: int = 300, vault: str | None = None) -> dict:
-    """Create a short-lived, single-file upload/download token for the
-    GET/PUT /attachments/{path} HTTP route, instead of handing out the
-    server's master API_KEY. method: 'PUT' (upload) or 'GET' (download).
-    expires_in: seconds until the token expires (default 300, max 3600).
-
-    If the server has
-    PUBLIC_BASE_URL configured, `url` is the ready-to-use request URL — use
-    it as-is, it already has everything this token needs (including
-    ?vault= when relevant) baked in. Otherwise build it yourself as:
-        curl -X PUT --data-binary @file.png \\
-            "http://host:port/attachments/{path}?exp={expires_at}&sig={sig}&vault={vault}"
-    (omit &vault=... only if the returned `vault` equals the server's
-    single/default vault — see list_vaults_tool). The token only authorizes
-    this exact path + method + vault and stops working after expires_at. In
-    multi-vault mode, requires an api_key identity — GitHub-OAuth identities
-    have no static secret of their own to sign with; use a plain
-    Authorization: Bearer request against /attachments/* instead (that path
-    works for any identity type, but needs ?vault=<name> added by hand if
-    targeting a non-default vault, since nothing was pre-signed for it).
-    data: {method, vault, expires_at, sig, url?}."""
+    """Mint a short-lived token for raw GET/PUT /attachments/{path} (no
+    base64 through the chat). method: 'PUT' | 'GET'; expires_in seconds
+    (default 300, max 3600). Use data.url as-is when present; otherwise call
+    /attachments/{path}?exp={expires_at}&sig={sig}&vault={vault}. Multi-vault
+    mode requires an api_key identity. data: {method, vault, expires_at,
+    sig, url?}."""
     cfg = get_config()
     vault_name = cfg.resolve_vault_name()
     if cfg.multi_vault:
