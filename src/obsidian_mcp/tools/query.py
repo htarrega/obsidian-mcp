@@ -398,6 +398,71 @@ def resolve_alias(name: str, index: VaultIndex) -> str | None:
     return resolved
 
 
+def resolve_note_ref(ref: str, index: VaultIndex) -> tuple[str, list[str]]:
+    """Resolve a note reference to a vault path: ``(path, other_candidates)``.
+
+    ``ref`` is either a note path (``Folder/Note.md``) or a bare note name /
+    link target (``Note``, ``note``, ``Folder/Note``, an alias), resolved like
+    an Obsidian wikilink: case-insensitive, by file name anywhere in the vault,
+    the shortest path winning when several notes share a name. An existing
+    ``.md`` path is returned as is without consulting the index. Raises
+    FileNotFoundError if nothing readable matches.
+    """
+    ref = ref.strip()
+    if not ref:
+        raise ValueError("A note path or name is required")
+    storage = VaultStorage.from_config()
+    if ref.lower().endswith(".md") and storage.exists(ref, read=True):
+        return storage.resolve_read(ref).relative, []
+
+    scope = ReadScope.current()
+    resolver = build_link_resolver(index)
+    candidates = [
+        path
+        for path in resolver.candidates(ref)
+        if path.lower().endswith(".md") and scope.allows(path)
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"Note not found: {ref!r}")
+    preferred = resolver.resolve(ref)
+    if preferred not in candidates:
+        preferred = min(candidates, key=lambda path: (path.count("/"), len(path), path))
+    return preferred, sorted(path for path in candidates if path != preferred)
+
+
+def get_outgoing_links(path: str, index: VaultIndex) -> list[dict]:
+    """Wikilinks and embeds of one note, resolved with Obsidian semantics.
+
+    One item per distinct (target, heading, embed): {target, heading, embed,
+    kind: 'note'|'attachment', resolved: path | None, count}. A target outside
+    the caller's read scope is reported as unresolved, so its existence does
+    not leak."""
+    note = parse_note(VaultStorage.from_config().read_text(path), path=path)
+    scope = ReadScope.current()
+    resolver = build_link_resolver(index)
+    items: dict[tuple, dict] = {}
+    for link in note.wikilinks:
+        key = (fold(link.target), fold(link.heading or ""), link.embed)
+        if key in items:
+            items[key]["count"] += 1
+            continue
+        resolved = resolver.resolve(link.target, source=path)
+        if resolved is not None and not scope.allows(resolved):
+            resolved = None
+        kind = link_kind(resolved if resolved else link.target)
+        if resolved and resolved.lower().endswith(".md"):
+            kind = "note"
+        items[key] = {
+            "target": link.target,
+            "heading": link.heading,
+            "embed": link.embed,
+            "kind": kind,
+            "resolved": resolved,
+            "count": 1,
+        }
+    return list(items.values())
+
+
 def list_all_tags(index: VaultIndex, sort_by: str = "count") -> list[dict]:
     """Return all tags in the vault with note counts.
     sort_by: 'count' (descending) | 'name' (ascending)."""

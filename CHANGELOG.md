@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TAGS_SOURCE=frontmatter|inline|both` (default `both`).
 - `get_broken_links_tool` items carry `kind` and `suggestion`; ambiguous
   names are reported in `meta.warnings`.
+- `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` trim the exposed tool surface after
+  every registration (including the `ob` tools); hidden tools are
+  unregistered, unknown names only log a warning. `ENABLE_PROMPTS` /
+  `ENABLE_RESOURCES` (default `true`) drop the generic prompts and the
+  `vault://` resources. Defaults keep the previous surface.
+- Verb-style tools: `get_outline_tool` (headings with file lines),
+  `get_outgoing_links_tool` (resolved/broken links and embeds of a note),
+  `prepend_to_note_tool` (insert at the top of the body, after frontmatter
+  and a leading H1), `set_task_status_tool` (check/uncheck one task line,
+  refused on a stale line or text mismatch) and `get_recent_notes_tool`.
+- `read_note_tool` and `get_backlinks_tool` accept a bare note name,
+  resolved like a wikilink (`meta.resolved_from`, `meta.candidates`).
+- `deploy/env.example` ships an annotated production `TOOLS_ALLOWLIST`
+  (23 tools) with prompts and resources off.
 
 ### Changed
 
@@ -34,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reporting `noise_lines_skipped` and `last_fully_synced_at`), accepts a
   case-insensitive substring `filter`, and collapses consecutive identical
   lines (`collapse_repeats=true`). `lines` counts lines after filtering.
+- The server instructions are short and convention-neutral: no tool
+  reference, example frontmatter or tag advice; they point to
+  `get_vault_conventions_tool`, keep the revision/precondition guidance and
+  mention periodic notes/templates only when configured. Long tool
+  docstrings were trimmed.
+- Task `line` numbers (`get_tasks_tool`, `read_note_tool`) are 1-based file
+  lines; they used to count from the end of the frontmatter.
+- `read_note_tool` on a missing note now says `Note not found: '<path>'`.
 
 ### Fixed
 
@@ -47,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or start a line, so `[#todo]` is no longer a tag (Obsidian behaviour).
 - Tasks: `*`, `+` and numbered bullets and tasks inside callouts are parsed;
   tasks in code blocks and comments are ignored.
+- Note outlines (`read_note_tool(mode="outline")`) no longer report `#`
+  lines inside code blocks, comments or frontmatter as headings.
 
 
 ## [2.1.2] - 2026-11-01

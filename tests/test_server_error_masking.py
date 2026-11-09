@@ -133,5 +133,5 @@ async def test_real_tool_policy_error_reaches_client(tmp_path, vault_factory, mo
     async with Client(server.mcp) as client:
         with pytest.raises(ToolError, match="Write access denied"):
             await client.call_tool("write_note_tool", {"path": "other/x.md", "content": "hi"})
-        with pytest.raises(ToolError, match="FileNotFoundError"):
+        with pytest.raises(ToolError, match="Note not found"):
             await client.call_tool("read_note_tool", {"path": "inbox/missing.md"})

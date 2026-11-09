@@ -25,10 +25,10 @@ The intended setup is to host obsidian-mcp on a server or NAS where your vault i
 - **Read & Search** — read notes, search full-text (exact/regex/fuzzy, optionally combined with a frontmatter filter or scoped to filenames), render embedded transclusions, inspect note outlines, list every file in the vault regardless of type
 - **Duplicate prevention** — `find_similar_notes_tool` ranks notes by TF-IDF similarity so a new note doesn't duplicate an existing one under different wording
 - **Schema linting** — `lint_schema_tool` validates frontmatter against the enums declared in your own `_AI_INSTRUCTIONS.md`, plus an optional cron-friendly health-check script
-- **Write** — create/overwrite notes (with automatic frontmatter preservation, dry-run previews, and unified diffs), patch sections or anchor-less body text, append content, update frontmatter (single or batch), manage tags, move notes with automatic wikilink rewriting
+- **Write** — create/overwrite notes (with automatic frontmatter preservation, dry-run previews, and unified diffs), patch sections or anchor-less body text, append or prepend content, check off a single task line safely, update frontmatter (single or batch), manage tags, move notes with automatic wikilink rewriting
 - **Optimistic concurrency** — every read returns a revision; pass it back to a write to detect edits landed by Obsidian Sync in between
 - **Folders** — list (optionally recursive with a full tree dump), create, delete, rename folders; renaming rewrites path-based wikilinks vault-wide
-- **Query & Graph** — backlinks, broken links resolved with Obsidian's rules (attachments by file name, kind + suggested fix), orphan detection, BFS link graph, vault stats, paged task collection with dedupe for repeated worklog tasks
+- **Query & Graph** — backlinks and outgoing links (notes addressable by bare name, like a wikilink), heading outlines, recently modified notes, broken links resolved with Obsidian's rules (attachments by file name, kind + suggested fix), orphan detection, BFS link graph, vault stats, paged task collection with dedupe for repeated worklog tasks
 - **Dataview-like queries** — filter notes by tags, status, frontmatter fields (exact match or `$ne`/`$in`/`$nin`/`$exists` operators), or inline fields (`key:: value`)
 - **Audit log** — every write-tool call is recorded; `get_audit_log_tool` queries it
 - **Periodic Notes** — read/preview daily, weekly, monthly, quarterly, yearly journal notes from templates
@@ -38,6 +38,7 @@ The intended setup is to host obsidian-mcp on a server or NAS where your vault i
 - **Multi-vault** *(opt-in)* — serve several fully isolated vaults from one deployment, each identity mapped to only the vault(s) it may access
 - **Templates** — render Obsidian templates with built-in (`{{date}}`, `{{title}}`, …) and custom variables
 - **MCP Resources & Prompts** — vault notes/stats/tags as MCP resources; `weekly_review`/`daily_note` prompts
+- **Trimmable surface** — `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` expose only the tools a workflow needs; `ENABLE_PROMPTS` / `ENABLE_RESOURCES` switch the generic prompts and resources off
 
 One JSON response shape across every tool — see [Response Envelope](docs/response-envelope.md).
 
@@ -73,7 +74,10 @@ That's enough for local `stdio` use. `TAGS_SOURCE=frontmatter|inline|both`
 (default `both`) picks where tags are read from — see
 [Configuration → Tags](docs/configuration.md#tags). For network transports, path
 restrictions, optional plugin-format tools, and every other variable, see
-**[Configuration](docs/configuration.md)**.
+**[Configuration](docs/configuration.md)**. To show a model only part of the
+tool set, list the tools in `TOOLS_ALLOWLIST` (see
+[Configuration → Exposed tool surface](docs/configuration.md#exposed-tool-surface)
+and the annotated example in `deploy/env.example`).
 
 Security settings (all optional, hardened defaults; details in
 [Configuration → Security hardening](docs/configuration.md#security-hardening)):

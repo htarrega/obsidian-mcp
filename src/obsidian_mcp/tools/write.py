@@ -8,13 +8,13 @@ import yaml
 
 from ..config import get_config
 from ..domain.index import VaultIndex
-from ..domain.markdown_scan import mask_non_content
+from ..domain.markdown_scan import frontmatter_end, mask_non_content
 from ..domain.models import (
     PreconditionRequiredError,
     RevisionConflictError,
     normalize_revision_token,
 )
-from ..domain.parser import extract_inline_tags
+from ..domain.parser import extract_inline_tags, extract_task_markers
 from ..envelope import batch_error, batch_item, batch_summary
 from ..storage.filesystem import VaultStorage
 from ..storage.locking import acquire_lock
@@ -351,6 +351,155 @@ def append_to_note(
         index.update(path)
 
     return revision_result({"path": path, "status": "appended"}, revision)
+
+
+_H1_LINE_RE = re.compile(r"# [^\n]*(?:\n|\Z)")
+
+
+def _prepend_offset(raw: str) -> int:
+    """Where prepended content goes: after the frontmatter, after any blank
+    lines that follow it, and after a leading level-1 heading (a note title)
+    if the body starts with one."""
+    offset = frontmatter_end(raw)
+    while raw.startswith("\n", offset) or raw.startswith("\r\n", offset):
+        offset += 1 if raw[offset] == "\n" else 2
+    h1 = _H1_LINE_RE.match(raw, offset)
+    if h1:
+        offset = h1.end()
+    return offset
+
+
+def prepend_to_note(
+    path: str,
+    content: str,
+    create: bool = True,
+    index: VaultIndex | None = None,
+    expected_revision: str | None = None,
+) -> dict:
+    """Insert content at the top of a note's body (see _prepend_offset): the
+    typical use is a new dated section on a newest-on-top log. ``content`` is
+    inserted verbatim plus a trailing newline if it lacks one; nothing else in
+    the note changes. Creates the note if it is missing and create=True."""
+    _require_note_path(path)
+    target = _storage().resolve_write(path)
+    path = target.relative
+    if not content.strip():
+        raise ValueError("content must not be empty")
+    block = content if content.endswith("\n") else content + "\n"
+    lock = acquire_lock(path, lock_path=get_config().lock_path)
+    try:
+        storage = _storage()
+        if storage.exists(path, read=True):
+            raw, current_revision = read_text_for_update(storage, path, expected_revision)
+            offset = _prepend_offset(raw)
+            if offset and not raw[:offset].endswith("\n"):
+                block = "\n" + block  # an H1 on the last line without a newline
+            patched = raw[:offset] + block + raw[offset:]
+        elif create:
+            if expected_revision is not None:
+                raise RevisionConflictError(path, expected_revision, None)
+            patched = block
+            current_revision = None
+        else:
+            raise FileNotFoundError(f"Note not found: {path!r}")
+        revision = storage.write_text_atomic(
+            path,
+            patched,
+            expected_revision=current_revision,
+            create_only=current_revision is None,
+        )
+    finally:
+        lock.release()
+
+    if index is not None:
+        index.update(path)
+
+    return revision_result({"path": path, "status": "prepended"}, revision)
+
+
+# A task line, split so the checkbox state can be swapped in place.
+_TASK_LINE_RE = re.compile(
+    r"^(?P<head>[ \t>]*(?:[-*+]|\d+[.)])[ \t]+\[)(?P<state>[ xX])(?P<tail>\][ \t]+)(?P<text>\S.*?)[ \t]*$"
+)
+
+
+def _task_text_matches(expected: str, raw_text: str, line: str) -> bool:
+    """Whitespace- and case-insensitive match of ``expected`` against the task
+    text as get_tasks_tool reports it (Tasks-plugin markers stripped), the raw
+    text after the checkbox, or the whole line."""
+    def norm(value: str) -> str:
+        return " ".join(value.split()).casefold()
+
+    wanted = norm(expected)
+    if not wanted:
+        return False
+    clean = extract_task_markers(raw_text)[0]
+    return wanted in (norm(clean), norm(raw_text), norm(line))
+
+
+def set_task_status(
+    path: str,
+    line: int,
+    done: bool,
+    expected_text: str,
+    index: VaultIndex | None = None,
+    expected_revision: str | None = None,
+) -> dict:
+    """Check or uncheck the task on 1-based file line ``line``.
+
+    Refuses (ValueError) if that line is not a checkbox task outside code, or
+    if its text does not match ``expected_text`` — protection against acting
+    on a stale line number after the note changed. Only the checkbox character
+    changes; an already-matching state is reported as unchanged and nothing
+    is written."""
+    _require_note_path(path)
+    target = _storage().resolve_write(path)
+    path = target.relative
+    if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        raise ValueError("line must be a positive integer (1-based file line)")
+    lock = acquire_lock(path, lock_path=get_config().lock_path)
+    try:
+        storage = _storage()
+        raw, current_revision = read_text_for_update(storage, path, expected_revision)
+        lines = raw.split("\n")
+        if line > len(lines):
+            raise ValueError(f"{path!r} has only {len(lines)} lines; line {line} does not exist")
+        original = lines[line - 1]
+        body = original[:-1] if original.endswith("\r") else original
+        masked = mask_non_content(raw).split("\n")[line - 1]
+        m = _TASK_LINE_RE.match(body)
+        if m is None or _TASK_LINE_RE.match(masked.rstrip("\r")) is None:
+            raise ValueError(f"Line {line} of {path!r} is not a task: {body.strip()[:120]!r}")
+        if not _task_text_matches(expected_text, m.group("text"), body):
+            raise ValueError(
+                f"Line {line} of {path!r} does not match expected_text "
+                f"(found {m.group('text')[:120]!r}); re-read the note and retry"
+            )
+        was_done = m.group("state").lower() == "x"
+        if was_done == done:
+            return {
+                "path": path,
+                "status": "unchanged",
+                "line": line,
+                "text": body,
+                "done": done,
+                "revision": current_revision,
+            }
+        new_line = m.group("head") + ("x" if done else " ") + body[m.end("state"):]
+        lines[line - 1] = new_line + ("\r" if original.endswith("\r") else "")
+        revision = storage.write_text_atomic(
+            path, "\n".join(lines), expected_revision=current_revision
+        )
+    finally:
+        lock.release()
+
+    if index is not None:
+        index.update(path)
+
+    return revision_result(
+        {"path": path, "status": "task_updated", "line": line, "text": new_line, "done": done},
+        revision,
+    )
 
 
 def patch_frontmatter(

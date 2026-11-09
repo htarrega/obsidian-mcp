@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from ..config import get_config
+from ..domain.markdown_scan import extract_headings
 from ..domain.parser import parse_note
 from ..storage.filesystem import VaultStorage
 from ..storage.policy import matches_path_rule
@@ -52,6 +54,33 @@ def list_notes(folder: str = "", include_meta: bool = False) -> list:
             results.append(rel)
 
     return sorted(results, key=lambda x: x["path"] if isinstance(x, dict) else x)
+
+
+RECENT_NOTES_MAX_LIMIT = 200
+_RECENT_SKIP_ROOTS = (".obsidian", ".trash")
+
+
+def get_recent_notes(limit: int = 20, folder: str = "") -> list[dict]:
+    """Most recently modified notes first: [{path, mtime}] (mtime as ISO 8601
+    UTC). Skips .obsidian/, .trash/ and EXCLUDE_PATHS."""
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    limit = min(int(limit), RECENT_NOTES_MAX_LIMIT)
+    cfg = get_config()
+    storage = VaultStorage.from_config(cfg)
+    rows: list[tuple[float, str]] = []
+    for resolved in storage.list_files(folder):
+        rel = resolved.relative
+        if not rel.lower().endswith(".md"):
+            continue
+        if rel.split("/", 1)[0] in _RECENT_SKIP_ROOTS or _is_excluded(rel, cfg.exclude_paths):
+            continue
+        rows.append((resolved.stat_result.st_mtime, rel))
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    return [
+        {"path": rel, "mtime": datetime.fromtimestamp(mtime, UTC).isoformat(timespec="seconds")}
+        for mtime, rel in rows[:limit]
+    ]
 
 
 def read_note(path: str) -> dict:
@@ -187,7 +216,6 @@ def _match_filename(
 
 
 _EMBED_RE = re.compile(r"!\[\[([^\]#|^]+?)(?:#([^\]|^]+?))?(?:\|[^\]]*)?\]\]")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
 
 def get_note_outline(path: str) -> dict:
@@ -197,13 +225,9 @@ def get_note_outline(path: str) -> dict:
     raw, revision = VaultStorage.from_config(cfg).read_text_with_revision(path)
     note = parse_note(raw, path=path)
 
-    headings = [
-        {"level": len(m.group(1)), "text": m.group(2).strip(), "line": raw[:m.start()].count("\n") + 1}
-        for m in _HEADING_RE.finditer(raw)
-    ]
     return {
         "path": path,
-        "headings": headings,
+        "headings": extract_headings(raw),
         "block_refs": [
             {"block_id": br.block_id, "line": br.line, "text": br.text[:80]}
             for br in note.block_refs
