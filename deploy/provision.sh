@@ -616,7 +616,7 @@ step_service() {
 	install -m 0644 "$SCRIPT_DIR/obsidian-mcp.service" "/etc/systemd/system/${UNIT_NAME}"
 	systemctl daemon-reload
 	systemctl enable "$UNIT_NAME"
-	if grep -q 'FILL_ME_IN' "$ENV_FILE"; then
+	if grep -qE '^[A-Za-z_][A-Za-z0-9_]*=.*FILL_ME_IN' "$ENV_FILE"; then
 		warn "$ENV_FILE still contains FILL_ME_IN placeholders: service NOT started"
 		cat <<-EOF
 			    Next steps (see deploy/README.md):
