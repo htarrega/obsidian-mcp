@@ -21,7 +21,7 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from ..envelope import read_result
-from .redact import redact_obj
+from .redact import redact, redact_obj
 from .runner import ObCommandError, ObError
 from .service import ObService, get_service
 from .settings import ObFlags, auth_token_file
@@ -99,16 +99,126 @@ def sync_status() -> dict:
     return read_result(None, data)
 
 
-def sync_logs(lines: int = 100) -> dict:
+# Routine heartbeat lines `ob sync --continuous` prints on every poll (about
+# every 30 s). Compared case-insensitively against the message with trailing
+# dots/spaces stripped, so only these exact messages are treated as noise.
+_NOISE_MESSAGES = frozenset(
+    {
+        "fully synced",
+        "connecting",
+        "connected",
+        "connection successful",
+        "connection successful. detecting changes",
+        "detecting changes",
+        "waiting for changes",
+    }
+)
+LOG_FILTER_MAX_CHARS = 200
+
+
+def _split_stamp(line: str) -> tuple[str, str]:
+    """``"<iso-ts> message"`` → (ts, message); ts is "" if absent."""
+    stamp, sep, message = line.partition(" ")
+    if sep and stamp[:4].isdigit() and "T" in stamp:
+        return stamp, message
+    return "", line
+
+
+def _is_noise(message: str) -> bool:
+    return message.strip().rstrip(". ").lower() in _NOISE_MESSAGES
+
+
+def _log_filter_value(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ToolError("filter must be a string")
+    if len(value) > LOG_FILTER_MAX_CHARS:
+        raise ToolError(f"filter is longer than {LOG_FILTER_MAX_CHARS} characters")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ToolError("filter must not contain control characters")
+    return value.lower()
+
+
+def _collapse_repeats(lines: list[str]) -> tuple[list[str], int]:
+    """Fold runs of identical messages into one line with a repeat marker."""
+    out: list[str] = []
+    collapsed = 0
+    run_first = run_last = ""
+    run_message: str | None = None
+    run_count = 0
+
+    def flush() -> None:
+        if run_message is None:
+            return
+        if run_count == 1:
+            out.append(run_first)
+        else:
+            stamp, _ = _split_stamp(run_last)
+            suffix = f", last at {stamp}" if stamp else ""
+            out.append(f"{run_first} [repeated {run_count}x{suffix}]")
+
+    for line in lines:
+        _, message = _split_stamp(line)
+        if message == run_message:
+            run_count += 1
+            run_last = line
+            collapsed += 1
+            continue
+        flush()
+        run_first = run_last = line
+        run_message = message
+        run_count = 1
+    flush()
+    return out, collapsed
+
+
+def sync_logs(
+    lines: int = 100,
+    exclude_noise: bool = True,
+    filter: str | None = None,
+    collapse_repeats: bool = True,
+) -> dict:
     """Most recent output lines of the background `ob sync` process.
 
-    lines: how many lines to return (clamped to 1..OB_LOG_LINES). Lines are
-    timestamped and redacted (e-mails, tokens, keys masked).
+    lines: how many lines to return (clamped to 1..OB_LOG_LINES), taken from
+    the end after filtering. Lines are timestamped and redacted.
+    exclude_noise (default true): drop routine heartbeat lines ("Fully
+    synced", "Connecting...", "Connection successful. Detecting changes...");
+    data then reports noise_lines_skipped and last_fully_synced_at.
+    filter: case-insensitive substring (not a regex) a line must contain.
+    collapse_repeats (default true): fold consecutive identical messages into
+    one line ending in "[repeated Nx, last at <ts>]".
     """
     service = _service()
     limit = max(1, min(int(lines), service.settings.log_lines))
-    items = service.supervisor.logs(limit)
-    return read_result(None, {"lines": items}, meta={"count": len(items), "limit": limit})
+    needle = _log_filter_value(filter)
+    buffered = service.supervisor.logs(service.settings.log_lines)
+
+    kept: list[str] = []
+    noise_skipped = 0
+    for line in buffered:
+        if exclude_noise and _is_noise(_split_stamp(line)[1]):
+            noise_skipped += 1
+            continue
+        if needle is not None and needle not in line.lower():
+            continue
+        kept.append(line)
+    collapsed = 0
+    if collapse_repeats:
+        kept, collapsed = _collapse_repeats(kept)
+    items = kept[-limit:]
+
+    data: dict[str, Any] = {"lines": items}
+    if exclude_noise:
+        data["noise_lines_skipped"] = noise_skipped
+        data["last_fully_synced_at"] = service.supervisor.status().get("last_fully_synced_at")
+    meta: dict[str, Any] = {"count": len(items), "limit": limit, "buffered": len(buffered)}
+    if collapse_repeats:
+        meta["collapsed"] = collapsed
+    if needle is not None:
+        meta["filter"] = redact(filter)
+    return read_result(None, data, meta=meta)
 
 
 def ob_info() -> dict:

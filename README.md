@@ -193,7 +193,7 @@ tool is registered and no process is started.
 | Tier | Tool | What it does |
 |---|---|---|
 | read-only | `sync_status` | Supervisor state + `ob sync-status --json` (vault, mode, conflict strategy, device, file types, configs, excluded folders) |
-| read-only | `sync_logs(lines=100)` | Tail of the redacted log buffer, clamped to 1..`OB_LOG_LINES` |
+| read-only | `sync_logs(lines=100, exclude_noise=true, filter=None, collapse_repeats=true)` | Tail of the redacted log buffer, clamped to 1..`OB_LOG_LINES`. By default drops heartbeat lines (`Fully synced`, `Connecting...`, `Connection successful. Detecting changes...`) and reports `noise_lines_skipped` + `last_fully_synced_at`; `filter` is a case-insensitive substring (max 200 chars, no control characters, matched on redacted text); consecutive identical lines fold into one `[repeated Nx, last at <ts>]` line |
 | read-only | `ob_info` | `ob --version`, this vault's `sync-list-local` entry, device name, whether an auth token file/env exists (boolean only). No network |
 | read-only | `list_remote_vaults` | `ob sync-list-remote --json` (network) |
 | ops | `sync_restart` | SIGTERM the child, wait, relaunch; returns the new status. Refused within `OB_RESTART_COOLDOWN` seconds of the last (re)start, or if another start/stop is still in progress after 30s |

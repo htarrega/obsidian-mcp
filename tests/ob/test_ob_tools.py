@@ -48,6 +48,86 @@ def test_sync_logs_clamps_and_redacts(fake_ob, ob_service, wait, monkeypatch):
     assert "me@x.org" not in str(tools.sync_logs())
 
 
+def test_sync_logs_excludes_noise_by_default(fake_ob, ob_service, wait, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_OB_SYNC_LINES",
+        "\n".join(
+            [
+                "Connecting...",
+                "Connection successful. Detecting changes...",
+                "Fully synced",
+                "Uploading file notes/a.md",
+                "Fully synced",
+                "Connecting...",
+                "Fully synced",
+                "Sync error: boom",
+            ]
+        ),
+    )
+    svc = ob_service()
+    wait(lambda: any("Sync error" in line for line in svc.supervisor.logs(50)))
+    data = tools.sync_logs()["data"]
+    messages = [line.split(" ", 1)[1] for line in data["lines"]]
+    assert "Uploading file notes/a.md" in messages
+    assert "Sync error: boom" in messages
+    assert not any(m in {"Fully synced", "Connecting..."} for m in messages)
+    assert data["noise_lines_skipped"] == 6
+    assert data["last_fully_synced_at"] is not None
+
+    raw = tools.sync_logs(exclude_noise=False, collapse_repeats=False)["data"]
+    assert "noise_lines_skipped" not in raw
+    assert sum("Fully synced" in line for line in raw["lines"]) == 3
+
+
+def test_sync_logs_filter_is_case_insensitive_substring(fake_ob, ob_service, wait, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_OB_SYNC_LINES",
+        "Uploading file notes/a.md\nDownloading notes/b.md\nUpload done (1 file)\nme@x.org uploaded",
+    )
+    svc = ob_service()
+    wait(lambda: any(EMAIL_MASK in line for line in svc.supervisor.logs(50)))
+    result = tools.sync_logs(filter="UPLOAD")
+    lines = result["data"]["lines"]
+    assert len(lines) == 3 and all("upload" in line.lower() for line in lines)
+    # Regex metacharacters are literal, not a pattern.
+    assert len(tools.sync_logs(filter="(1 file)")["data"]["lines"]) == 1
+    assert tools.sync_logs(filter="notes/.*")["data"]["lines"] == []
+    # Filtering runs on redacted text, so it cannot probe for secrets.
+    assert tools.sync_logs(filter="me@x.org")["data"]["lines"] == []
+    assert "me@x.org" not in str(tools.sync_logs(filter="me@x.org"))
+
+
+@pytest.mark.parametrize("bad", ["x" * 201, "a\nb", "tab\there", "nul\x00"])
+def test_sync_logs_rejects_invalid_filter(fake_ob, ob_service, bad):
+    ob_service(start=False)
+    with pytest.raises(ToolError):
+        tools.sync_logs(filter=bad)
+
+
+def test_sync_logs_collapses_consecutive_repeats(fake_ob, ob_service, wait, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_OB_SYNC_LINES",
+        "\n".join(["Retrying upload"] * 4 + ["Uploading file a.md", "Retrying upload", "END"]),
+    )
+    svc = ob_service()
+    wait(lambda: any("END" in line for line in svc.supervisor.logs(50)))
+    result = tools.sync_logs()
+    lines = [line for line in result["data"]["lines"] if "[supervisor]" not in line and "Starting sync" not in line]
+    assert len(lines) == 4
+    assert lines[0].endswith("]") and "Retrying upload [repeated 4x, last at " in lines[0]
+    assert lines[2].endswith("Retrying upload")  # a run of one is left alone
+    assert result["meta"]["collapsed"] == 3
+    plain = tools.sync_logs(collapse_repeats=False)["data"]["lines"]
+    assert sum("Retrying upload" in line for line in plain) == 5
+
+
+def test_noise_detection_is_exact_message_match():
+    assert tools._is_noise("Fully synced")
+    assert tools._is_noise("connection successful. detecting changes...")
+    assert not tools._is_noise("Fully synced 3 files, 1 conflict")
+    assert not tools._is_noise("Connecting to the server failed")
+
+
 def test_ob_info(fake_ob, ob_service, tmp_path, monkeypatch):
     ob_service(start=False)
     info = tools.ob_info()["data"]
