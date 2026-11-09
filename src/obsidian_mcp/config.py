@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
+from .layout import LayoutError, VaultLayout, layout_from_env, layout_from_json
 from .storage.policy import (
     EffectiveAccessPolicy,
     PolicyMergeError,
@@ -60,6 +61,7 @@ class VaultEntry:
     )
     read_only: bool | None = None
     description: str = ""
+    layout: VaultLayout = field(default_factory=VaultLayout)
 
 
 @dataclass(frozen=True)
@@ -258,6 +260,10 @@ def load_vaults_file(
         read_only = raw_entry.get("read_only")
         if read_only is not None and not isinstance(read_only, bool):
             raise ConfigError(f"Vault {name!r} read_only must be a boolean")
+        try:
+            layout = layout_from_json(raw_entry, vault_name=name)
+        except LayoutError as exc:
+            raise ConfigError(str(exc)) from exc
         vaults[name] = VaultEntry(
             name=name,
             path=vault_path,
@@ -280,10 +286,11 @@ def load_vaults_file(
             deny_write_paths=_path_rules(
                 raw_entry.get("deny_write_paths"),
                 name=f"vault {name!r} deny_write_paths",
-                default=(".obsidian/", ".trash/", "_AI_INSTRUCTIONS.md"),
+                default=(".obsidian/", ".trash/", layout.conventions_path),
             ),
             read_only=read_only,
             description=str(raw_entry.get("description", "")),
+            layout=layout,
         )
 
     vault_items = list(vaults.items())
@@ -449,6 +456,10 @@ class Config:
                     f"VAULT_PATH does not exist or is not a directory: {vault_path}"
                 )
             try:
+                layout = layout_from_env()
+            except LayoutError as exc:
+                raise ConfigError(str(exc)) from exc
+            try:
                 entry = VaultEntry(
                     name="default",
                     path=vault_path,
@@ -478,11 +489,12 @@ class Config:
                         path_rules_from_env(
                             os.environ.get(
                                 "DENY_WRITE_PATHS",
-                                ".obsidian/,.trash/,_AI_INSTRUCTIONS.md",
+                                f".obsidian/,.trash/,{layout.conventions_path}",
                             ),
                             name="DENY_WRITE_PATHS",
                         )
                     ),
+                    layout=layout,
                 )
             except VaultPathError as exc:
                 raise ConfigError(str(exc)) from exc
@@ -675,6 +687,10 @@ class Config:
     @property
     def deny_write_paths(self) -> tuple[str, ...]:
         return self._current_vault_entry().deny_write_paths
+
+    @property
+    def layout(self) -> VaultLayout:
+        return self._current_vault_entry().layout
 
     @property
     def read_only(self) -> bool:
