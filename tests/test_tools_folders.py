@@ -218,6 +218,33 @@ def test_list_folder_recursive_max_depth(vault_factory):
     assert result["tree"]["folders"]["Projekte"]["folders"] == {}
 
 
+def test_list_folder_max_depth_marks_truncated_nodes(tmp_path, vault_factory):
+    vault_factory({
+        "Top/Cut/a.md": "a",
+        "Top/Cut/Deeper/b.md": "b",
+        "Top/leaf.md": "leaf",
+    })
+    (tmp_path / "Top" / "Empty").mkdir()
+    (tmp_path / "Top" / "Cut" / ".hidden").mkdir()
+    result = list_folder(recursive=True, max_depth=2)
+    top = result["tree"]["folders"]["Top"]
+    # Fully expanded node keeps the original shape (no extra keys).
+    assert set(top) == {"folders", "files"}
+    cut = top["folders"]["Cut"]
+    assert cut["truncated"] is True
+    assert cut["children_count"] == 2  # a.md + Deeper/, dotfiles excluded
+    empty = top["folders"]["Empty"]
+    assert empty["truncated"] is True
+    assert empty["children_count"] == 0
+
+
+def test_list_folder_unlimited_depth_has_no_truncation_flags(vault_factory):
+    vault_factory({"A/B/c.md": "c"})
+    result = list_folder(recursive=True)
+    b = result["tree"]["folders"]["A"]["folders"]["B"]
+    assert "truncated" not in b and "children_count" not in b
+
+
 def test_list_folder_recursive_hides_dotfiles(tmp_path, vault_factory):
     vault_factory({"a.md": "A"})
     (tmp_path / ".obsidian").mkdir()

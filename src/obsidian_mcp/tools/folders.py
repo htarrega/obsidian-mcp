@@ -125,7 +125,19 @@ def _build_tree(
             continue
         if entry.is_dir:
             if max_depth is not None and depth >= max_depth:
-                folders[entry.name] = {"folders": {}, "files": []}
+                # Cut by the depth limit: flag it so it is not mistaken for an
+                # empty folder, and say how much is hidden below.
+                children = sum(
+                    1
+                    for child in storage.list_dir(entry.relative)
+                    if not child.name.startswith(".")
+                )
+                folders[entry.name] = {
+                    "folders": {},
+                    "files": [],
+                    "truncated": True,
+                    "children_count": children,
+                }
             else:
                 folders[entry.name] = _build_tree(
                     storage, entry.relative, depth + 1, max_depth

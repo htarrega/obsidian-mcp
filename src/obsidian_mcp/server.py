@@ -278,7 +278,8 @@ renames, and `ENABLE_BULK_REPLACE` registers bulk replacement.
 
 ### Folders
 - `list_folder_tool(path, recursive, max_depth)` — contents (path="" = vault root); hides dotfiles;
-  recursive=True returns a full tree dump in one call
+  recursive=True returns a full tree dump in one call; folders cut by max_depth carry
+  truncated=true + children_count
 - `create_folder_tool(path)` — create folder, parents auto-created
 - `rename_folder_tool(from_path, to_path)` — rename + rewrites path-based wikilinks
 - `list_trash_tool()` — see what's sitting in .trash/, with the names restore_tool expects
@@ -2167,7 +2168,9 @@ def list_folder_tool(path: str = "", recursive: bool = False, max_depth: int | N
     path='': root of the vault.
     recursive=False (default): immediate contents only — data: {folders, files}.
     recursive=True: full tree dump in one call — data: {tree: {folders: {name: tree}, files: [...]}}.
-    max_depth limits how many levels deep to descend (None = unlimited)."""
+    max_depth limits how many levels deep to descend (None = unlimited); folders
+    cut by the limit carry truncated=true and children_count (direct subfolders
+    + files), so they are not confused with empty folders."""
     result = list_folder(path, recursive=recursive, max_depth=max_depth)
     return _read_envelope(result.get("path", path), result, meta={"recursive": recursive})
 
