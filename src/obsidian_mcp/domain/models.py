@@ -68,6 +68,7 @@ class WikiLink:
     target: str
     alias: str | None = None
     heading: str | None = None
+    embed: bool = False             # ![[...]]
 
 
 @dataclass

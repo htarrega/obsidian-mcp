@@ -8,11 +8,13 @@ import yaml
 
 from ..config import get_config
 from ..domain.index import VaultIndex
+from ..domain.markdown_scan import mask_non_content
 from ..domain.models import (
     PreconditionRequiredError,
     RevisionConflictError,
     normalize_revision_token,
 )
+from ..domain.parser import extract_inline_tags
 from ..envelope import batch_error, batch_item, batch_summary
 from ..storage.filesystem import VaultStorage
 from ..storage.locking import acquire_lock
@@ -472,7 +474,12 @@ def manage_tags(
     index: VaultIndex | None = None,
     expected_revision: str | None = None,
 ) -> dict:
-    """Add or remove tags on a note. Updates frontmatter tags array and strips inline #tags."""
+    """Add or remove tags on a note, honouring TAGS_SOURCE.
+
+    'both' (default) and 'frontmatter': added tags go to the frontmatter
+    ``tags`` array. 'inline': added tags are appended to the body as #tags.
+    Removal always edits the frontmatter array; inline #tags (outside code
+    and comments) are stripped unless TAGS_SOURCE is 'frontmatter'."""
     _require_note_path(path)
     target = _storage().resolve_write(path)
     path = target.relative
@@ -487,7 +494,7 @@ def manage_tags(
     try:
         storage = _storage()
         raw, current_revision = read_text_for_update(storage, path, expected_revision)
-        patched = _apply_tag_changes(raw, add, remove)
+        patched = _apply_tag_changes(raw, add, remove, source=get_config().tags_source)
         revision = storage.write_text_atomic(path, patched, expected_revision=current_revision)
     finally:
         lock.release()
@@ -500,27 +507,50 @@ def manage_tags(
     )
 
 
-def _apply_tag_changes(raw: str, add: list[str], remove: list[str]) -> str:
+def _apply_tag_changes(
+    raw: str, add: list[str], remove: list[str], source: str = "both"
+) -> str:
     fm, body = _parse_frontmatter(raw)
 
     current: list = fm.get("tags", [])
     if not isinstance(current, list):
         current = [current] if current else []
 
-    for tag in add:
-        if tag not in current:
-            current.append(tag)
+    if source == "inline":
+        existing = set(extract_inline_tags(body))
+        new_inline = [tag.lstrip("#") for tag in add if tag.lstrip("#") not in existing]
+        if new_inline:
+            body = body.rstrip("\n") + "\n\n" + " ".join(f"#{tag}" for tag in new_inline) + "\n"
+    else:
+        for tag in add:
+            if tag not in current:
+                current.append(tag)
     for tag in remove:
         current = [t for t in current if t != tag]
-    fm["tags"] = current
+    if current or "tags" in fm:
+        fm["tags"] = current
 
-    # Strip removed tags from body inline (#tag syntax)
-    for tag in remove:
-        body = re.sub(r"(?<!\S)#" + re.escape(tag) + r"(?=[\s,.]|$)", "", body)
-    # Collapse multiple spaces created by removal
-    body = re.sub(r"[ \t]{2,}", " ", body)
+    if source != "frontmatter" and remove:
+        body = _strip_inline_tags(body, remove)
 
     return _serialize_frontmatter(fm, body)
+
+
+def _strip_inline_tags(body: str, tags: list[str]) -> str:
+    """Remove ``#tag`` occurrences in prose (code and %% comments untouched)."""
+    masked = mask_non_content(body)
+    for tag in tags:
+        pattern = re.compile(r"(?<!\S)#" + re.escape(tag.lstrip("#")) + r"(?=[\s,.]|$)")
+        for m in reversed(list(pattern.finditer(masked))):
+            body = body[: m.start()] + body[m.end():]
+            masked = masked[: m.start()] + masked[m.end():]
+    # Collapse multiple spaces created by removal (prose lines only)
+    lines = body.split("\n")
+    masked_lines = masked.split("\n")
+    return "\n".join(
+        re.sub(r"(?<=\S)[ \t]{2,}", " ", line) if line == masked_line else line
+        for line, masked_line in zip(lines, masked_lines, strict=True)
+    )
 
 
 def _apply_frontmatter_updates(raw: str, updates: dict, merge_arrays: bool) -> str:
