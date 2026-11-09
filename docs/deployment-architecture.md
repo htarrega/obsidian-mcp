@@ -151,7 +151,7 @@ Key points:
 | Path | Owner / mode | Contents |
 |---|---|---|
 | `/opt/obsidian-mcp/app` | root, 0755 | Git checkout at an exact commit (detached), read-only for the service |
-| `/opt/obsidian-mcp/app/.venv` | root | Environment from `uv sync --locked --no-dev --no-editable --compile-bytecode`. Started as `.venv/bin/obsidian-remote-mcp` |
+| `/opt/obsidian-mcp/app/.venv` | root | Environment from `uv sync --locked --no-dev --no-editable --reinstall-package obsidian-remote-mcp`, then checked against the checkout. Started as `.venv/bin/obsidian-remote-mcp` |
 | `/opt/obsidian-mcp/python` | root, 0755 | uv-managed CPython (`UV_PYTHON_INSTALL_DIR`) |
 | `/opt/obsidian-mcp/DEPLOYED_COMMIT`, `PREVIOUS_COMMIT` | root | Active and previous commit (for rollback) |
 | `/etc/obsidian-mcp/env` | root:root 0600 (directory 0700) | Configuration and secrets (`EnvironmentFile`). Not overwritten on re-provisioning |
@@ -171,10 +171,13 @@ Key points:
 ![Provision, update and rollback flow](diagrams/05-deploy-flow.svg)
 
 `provision.sh` is idempotent and also configures the host; it verifies the
-APT repository signing-key fingerprints and installs pinned versions.
-`update.sh` only changes the application. On first install the service is
-not started while `/etc/obsidian-mcp/env` still contains `RELLENAR`
-placeholders; before that, run `ob login` and `ob sync-setup` by hand as the
+APT repository signing-key fingerprints, the uv tarball sha256, and installs
+`ob` with `npm ci` from the committed lockfile as the unprivileged `obhbuild`
+user. Both scripts reinstall the project package on every sync and refuse to
+continue if the installed code differs from the checked-out commit (a stale
+build would otherwise keep running old code). `update.sh` only changes the
+application. On first install the service is not started while
+`/etc/obsidian-mcp/env` still has a `FILL_ME_IN` assignment; before that, run `ob login` and `ob sync-setup` by hand as the
 `obsidian` user.
 
 ## 8. Security layers
@@ -201,6 +204,11 @@ placeholders; before that, run `ob login` and `ob sync-setup` by hand as the
 - **High-impact tools off**: `ENABLE_DELETE`, `ALLOW_PERMANENT_DELETE`,
   `ENABLE_MOVE`, `ENABLE_FOLDER_RENAME` and `ENABLE_BULK_REPLACE` are `false`.
   A disabled tool is not registered.
+- **Exposure filters**: `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` unregister every
+  tool outside the production set (23 skill-style tools for the Mentat vault),
+  and `ENABLE_PROMPTS` / `ENABLE_RESOURCES` are `false`. Vault conventions come
+  from `CONVENTIONS_PATH` (`(000) System/_AI_INSTRUCTIONS.md`), which is
+  write-denied.
 - **Hostile-input robustness**: `MASK_ERROR_DETAILS`, `REGEX_MAX_LENGTH`,
   `REGEX_MAX_REPEAT` and `REGEX_TIMEOUT_SECONDS`.
 - **ob**: tiers `ENABLE_OB` / `ENABLE_OB_OPS` / `ENABLE_OB_ADMIN` (admin off),

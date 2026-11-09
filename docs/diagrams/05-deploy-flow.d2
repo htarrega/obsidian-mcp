@@ -19,12 +19,13 @@ host: "VM · run as root" {
   class: zone-infra
   provision: "sudo COMMIT=SHA ./provision.sh\npackages, unattended-upgrades, sshd,\niptables, sysctl, user, Node + ob,\nuv + Python, Caddy, fail2ban, unit" {class: ops}
   update: "sudo ./update.sh SHA" {class: ops}
-  verify: "APT signing-key fingerprints checked\npinned OB_VERSION, UV_VERSION,\nNODE_MAJOR, CADDY_VERSION" {class: sec}
+  verify: "SUPPLY CHAIN\nAPT signing-key fingerprints checked\nuv tarball sha256 pinned\nob: npm ci from committed lockfile,\nrun as unprivileged obhbuild\npinned NODE_MAJOR, CADDY_VERSION" {class: sec}
   fetch: "git fetch\ncheckout --detach SHA" {class: ops}
-  sync: "uv sync --locked --no-dev\n--no-editable --compile-bytecode" {class: ops}
+  sync: "uv sync --locked --no-dev --no-editable\n--reinstall-package obsidian-remote-mcp" {class: ops}
+  codecheck: "installed package ==\ncheckout src/? (diff)" {class: sec; shape: diamond}
   restore: "restore previous commit\nand its venv (update.sh)" {class: ops}
   record: "write PREVIOUS_COMMIT\nand DEPLOYED_COMMIT" {class: data}
-  envcheck: "env file still has\nRELLENAR placeholders?" {class: sec; shape: diamond}
+  envcheck: "env file still has a\nFILL_ME_IN assignment?" {class: sec; shape: diamond}
   manual: "operator, as user obsidian:\nob login, ob sync-setup,\nfill /etc/obsidian-mcp/env" {class: client}
   restart: "systemctl restart obsidian-mcp" {class: ops}
   health: "GET 127.0.0.1:8000/health\nOK within 60 s?" {class: ops; shape: diamond}
@@ -41,8 +42,10 @@ host.provision -> host.fetch {class: flow}
 host.update -> host.fetch {class: flow}
 repo -> host.fetch: "git objects" {class: flow}
 host.fetch -> host.sync {class: flow}
-host.sync -> host.record: "ok" {class: flow}
+host.sync -> host.codecheck: "ok" {class: flow}
 host.sync -> host.restore: "fails" {class: loop}
+host.codecheck -> host.record: "match" {class: flow}
+host.codecheck -> host.restore: "stale build" {class: loop}
 host.record -> host.envcheck: "provision.sh" {class: flow}
 host.record -> host.restart: "update.sh" {class: flow}
 host.envcheck -> host.manual: "yes: service not started" {class: loop}

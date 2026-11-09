@@ -33,9 +33,12 @@ svc: "obsidian-remote-mcp · 127.0.0.1:8000 · User=obsidian" {
 
   dispatch: "FastMCP tool dispatch\nmask_error_details\n(library, black box)" {class: ext}
 
+  exposure: "exposure filter · at startup\nTOOLS_ALLOWLIST / DENYLIST\nENABLE_PROMPTS, ENABLE_RESOURCES\nhidden tools are unregistered" {class: sec}
+
   tools: "TOOLS" {
     class: zone-own
-    vaulttools: "vault tools\nread, write, query, ..." {class: own}
+    vaulttools: "vault tools · skill-style verbs\nread, search, outline, append,\nprepend, patch, tasks, links, ..." {class: own}
+    layout: "vault layout · layout.py\nCONVENTIONS_PATH, ENTRY_NOTE,\nORPHAN_EXCLUDES, TEMPLATES_DIR,\nPERIODIC_*" {class: own}
     saferegex: "safe_regex\nlength + nested-repeat check\nper-search timeout" {class: sec}
     obtools: "ob tools" {class: own}
   }
@@ -76,7 +79,9 @@ svc.verifier <-> github: "GET /user, cached 300 s" {class: flow}
 svc.fasthttp -> svc.mw.vaultres: "authenticated request" {class: main}
 svc.mw.vaultres -> svc.mw.userfacing: "" {class: main}
 svc.mw.userfacing -> svc.dispatch: "" {class: main}
+svc.exposure -> svc.dispatch: "registered tools only" {class: flow}
 svc.dispatch -> svc.tools.vaulttools: "tool call" {class: flow}
+svc.tools.layout -> svc.tools.vaulttools: "where conventions,\nroot and excludes live" {class: flow}
 svc.dispatch -> svc.tools.obtools: "tool call" {class: flow}
 svc.tools.vaulttools -> svc.tools.saferegex: "user patterns" {class: flow}
 svc.tools.vaulttools -> svc.policy.canon: "path as text" {class: flow}
