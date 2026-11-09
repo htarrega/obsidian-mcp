@@ -47,7 +47,13 @@ if [[ ${current} == "${target}" ]]; then
 fi
 
 sync_venv() {
-	(cd "${APP_DIR}" && "${UV}" sync --locked --no-dev --no-editable --compile-bytecode --python "${PYTHON_VERSION}")
+	# --reinstall-package: the version rarely changes between commits; without it
+	# uv keeps the previously built package and the service runs stale code.
+	(cd "${APP_DIR}" && "${UV}" sync --locked --no-dev --no-editable --reinstall-package obsidian-remote-mcp --compile-bytecode --python "${PYTHON_VERSION}") || return 1
+	local site
+	site=$(echo "${APP_DIR}"/.venv/lib/python3*/site-packages)
+	diff -rq --exclude=__pycache__ "${APP_DIR}/src/obsidian_mcp" "${site}/obsidian_mcp" >/dev/null \
+		|| { printf 'ERROR: installed package differs from the checkout\n' >&2; return 1; }
 }
 
 restore() {

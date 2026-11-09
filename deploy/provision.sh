@@ -202,6 +202,16 @@ step_sshd() {
 	info "PasswordAuthentication no (verified with sshd -T)"
 }
 
+# Fail if the package installed in the venv is not the checked-out source.
+verify_installed_code() {
+	local app=$1 site
+	site=$(echo "$app"/.venv/lib/python3*/site-packages)
+	[[ -d $site/obsidian_mcp ]] || die "obsidian_mcp not installed in $site"
+	diff -rq --exclude=__pycache__ "$app/src/obsidian_mcp" "$site/obsidian_mcp" >/dev/null \
+		|| die "installed obsidian_mcp in the venv differs from $app/src (stale build?)"
+	info "installed package matches the checkout"
+}
+
 # Number of the first INPUT rule whose `-S` line contains $2 (empty if none).
 rule_num() {
 	local ipt=$1 pattern=$2
@@ -514,8 +524,11 @@ step_app() {
 		# --no-editable: install the package into the venv instead of a .pth to
 		# src/, so the venv is self-contained; bytecode precompiled because the
 		# tree is read-only for the service user.
-		/usr/local/bin/uv sync --locked --no-dev --no-editable --compile-bytecode --python "$PYTHON_VERSION"
+		# --reinstall-package: the project version rarely changes between
+		# commits, and without it uv keeps the previously built package.
+		/usr/local/bin/uv sync --locked --no-dev --no-editable --reinstall-package obsidian-remote-mcp --compile-bytecode --python "$PYTHON_VERSION"
 	)
+	verify_installed_code "$APP_DIR"
 	if [[ -n $previous && $previous != "$COMMIT" ]]; then
 		echo "$previous" >"$OPT_DIR/PREVIOUS_COMMIT"
 	fi
