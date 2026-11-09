@@ -1,5 +1,5 @@
 """Validate note frontmatter against the enum schema declared in the vault's
-own _AI_INSTRUCTIONS.md, instead of a hardcoded/external schema config."""
+own conventions file (CONVENTIONS_PATH, default _AI_INSTRUCTIONS.md), instead of a hardcoded/external schema config."""
 from __future__ import annotations
 
 import re
@@ -51,7 +51,7 @@ def parse_frontmatter_schema(instructions: str) -> dict[str, list[str]]:
 
 def lint_schema(index: VaultIndex) -> dict:
     """Validate every note's frontmatter against the enum fields declared in
-    _AI_INSTRUCTIONS.md. Returns {schema, violations: [{path, field, found,
+    the conventions file. Returns {schema, violations: [{path, field, found,
     expected_enum}]} — only the deviations, not a full vault dump.
     A note missing a schema field entirely is not a violation (that's a
     different concern); this only flags a *present* value outside the
@@ -59,10 +59,17 @@ def lint_schema(index: VaultIndex) -> dict:
     schema/violations pair rather than guessing.
     """
     cfg = get_config()
-    schema = parse_frontmatter_schema(get_vault_conventions())
+    conventions = get_vault_conventions()
+    schema = parse_frontmatter_schema(conventions)
     violations: list[dict] = []
     if not schema:
-        return {"schema": schema, "violations": violations}
+        result: dict = {"schema": schema, "violations": violations}
+        if not conventions.strip():
+            result["hint"] = (
+                f"No conventions file at {cfg.layout.conventions_path!r}, so there is no "
+                "schema to lint against."
+            )
+        return result
 
     for note_path in _readable_notes(index):
         try:

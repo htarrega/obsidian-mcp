@@ -98,7 +98,6 @@ from .tools.query import (
     get_periodic_note,
     get_tag_tree,
     get_tasks,
-    get_vault_conventions,
     get_vault_stats,
     list_all_tags,
     query_notes,
@@ -106,7 +105,8 @@ from .tools.query import (
 )
 from .tools.read import get_note_outline, list_notes, read_note, render_note, search_notes
 from .tools.similarity import find_similar_notes
-from .tools.templates import create_from_template, list_templates
+from .tools.templates import create_from_template, list_templates_info
+from .tools.vault_layout import vault_conventions
 from .tools.write import (
     append_to_note,
     delete_note,
@@ -192,10 +192,11 @@ conversation, the same way you already repeat `path=` on each call. If
 nothing to choose between.
 
 ## Vault Conventions
-Call `get_vault_conventions_tool()` first. If the vault has an `_AI_INSTRUCTIONS.md`,
-it defines the folder structure, tag schema, and naming rules for this specific vault.
-If it doesn't exist, explore the vault with `list_folder_tool()` and `list_notes_tool()`
-to understand the structure before writing anything.
+Call `get_vault_conventions_tool()` first. With `source: "file"` it is the vault's own
+conventions file (folder structure, tag schema, naming rules). With
+`source: "auto-generated"` it is a summary derived from the vault (folders, frontmatter
+usage, entry note); explore further with `list_folder_tool()` and `list_notes_tool()`
+before writing anything.
 Always use `search_notes_tool` or `query_notes_tool` before creating notes to avoid duplicates.
 
 Obsidian uses the **filename** (without `.md`) as the note title in the UI, graph,
@@ -484,9 +485,9 @@ Use `write_base_tool` for a new Base, `patch_base_tool` for a targeted change
 Only `key:: value` inline fields are parsed server-side. DQL block queries are Obsidian-app-only.
 
 ### Periodic Notes
-Default paths: `Journal/YYYY-MM-DD.md` (daily), `Journal/Weekly/YYYY-Www.md`, etc.
-Check `_AI_INSTRUCTIONS.md` — the vault may use different paths.
-Templates use `{{date}}`, `{{title}}`, `{{week}}` etc.
+Paths come from the server's per-vault layout config (default `Journal/YYYY-MM-DD.md`,
+`Journal/Weekly/YYYY-Www.md`, …). A missing note returns `exists: false` with
+`suggested_path`; don't create one unless the user wants it. Templates use `{{date}}`, `{{title}}`, `{{week}}` etc.
 """
 
 
@@ -503,14 +504,15 @@ def _load_instructions() -> str:
         # Per-vault conventions remain available through the authorized tool.
         return _DEFAULT_INSTRUCTIONS
     try:
-        vault = VaultStorage.from_config(cfg).read_text("_AI_INSTRUCTIONS.md")
+        conventions_path = cfg.layout.conventions_path
+        vault = VaultStorage.from_config(cfg).read_text(conventions_path)
     except (FileNotFoundError, PermissionError, VaultPathError, OSError):
         # Missing or unreadable optional instructions do not prevent startup;
         # descriptor/policy failures are not converted into unrestricted I/O.
         return _DEFAULT_INSTRUCTIONS
     return (
         _DEFAULT_INSTRUCTIONS
-        + "\n\n# Vault-specific instructions (_AI_INSTRUCTIONS.md)\n\n"
+        + f"\n\n# Vault-specific instructions ({conventions_path})\n\n"
         + vault
     )
 
@@ -891,7 +893,8 @@ def list_notes_tool(folder: str = "", include_meta: bool = False, vault: str | N
     """List all Markdown notes in the vault (or a subfolder).
     Set include_meta=True to get title, tags, status, created per note.
     data.items is a list of paths, or of {path, title, tags, status, created,
-    mtime} when include_meta=True."""
+    created_source, mtime} when include_meta=True (created falls back to file
+    birth time/mtime; created_source: 'frontmatter'|'birthtime'|'mtime')."""
     return list_result(list_notes(folder, include_meta=include_meta))
 
 
@@ -1338,9 +1341,11 @@ def get_backlinks_tool(path: str, vault: str | None = None) -> dict:
 
 @mcp.tool()
 def get_vault_conventions_tool(vault: str | None = None) -> dict:
-    """Return the vault's AI instructions / conventions from _AI_INSTRUCTIONS.md.
-    data.conventions is the raw Markdown."""
-    return read_result(None, {"conventions": get_vault_conventions()})
+    """Return the vault's conventions. data: {conventions (Markdown), source, path}.
+    source "file": the vault's conventions file at `path`. source
+    "auto-generated": no such file, so a summary of folders, note counts,
+    entry note and frontmatter usage derived from the vault."""
+    return read_result(None, vault_conventions(_index))
 
 
 @mcp.tool()
@@ -1391,13 +1396,13 @@ def list_vaults_tool() -> dict:
 @mcp.tool()
 def lint_schema_tool(vault: str | None = None) -> dict:
     """Validate every note's frontmatter against the enum fields declared in
-    the vault's _AI_INSTRUCTIONS.md (under a "Frontmatter Schema" heading,
+    the vault's conventions file (under a "Frontmatter Schema" heading,
     e.g. `status: inbox | active | done | archived`). Returns
     {schema, violations: [{path, field, found, expected_enum}]} — only the
     deviations, not a full vault dump. A field that's simply missing on a
     note isn't a violation, only a present value outside the declared enum
-    is. Returns an empty schema/violations pair if no enum schema can be
-    parsed from _AI_INSTRUCTIONS.md."""
+    is. Returns an empty schema/violations pair (plus a hint if the file is
+    missing) when no enum schema can be parsed."""
     return read_result(None, lint_schema(_index))
 
 
@@ -1410,10 +1415,15 @@ def get_broken_links_tool(vault: str | None = None) -> dict:
 
 @mcp.tool()
 def get_orphans_tool(exclude_folders: list[str] | None = None, vault: str | None = None) -> dict:
-    """Find notes that no other note links to.
-    Excludes Journal and Templates by default. data.items is a list of paths."""
+    """Find notes that no other note links to. data.items is a list of paths.
+    exclude_folders defaults to the vault's configured orphan excludes; the
+    configured entry note is never listed. Names without '/' match a folder
+    at any depth, entries with '/' are rooted prefixes."""
+    layout = get_config().layout
+    excludes = exclude_folders if exclude_folders else list(layout.orphan_excludes)
     return list_result(
-        get_orphans(_index, exclude_folders=exclude_folders or ["Journal", "Templates"])
+        get_orphans(_index, exclude_folders=excludes, entry_note=layout.entry_note),
+        meta={"excluded_folders": excludes, "entry_note": layout.entry_note},
     )
 
 
@@ -1487,10 +1497,12 @@ def get_tasks_tool(
 
 @mcp.tool()
 def get_periodic_note_tool(period: str = "daily", date: str = "today", vault: str | None = None) -> dict:
-    """Read or preview a periodic note.
+    """Read or preview a periodic note at the vault's configured path pattern.
     period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'.
     date: 'today' | 'yesterday' | 'YYYY-MM-DD'.
-    data: {period, date, exists, content, frontmatter, tasks}."""
+    data: {period, date, exists, pattern, configured, content, frontmatter, tasks}.
+    When missing: exists=false plus suggested_path, template (or null) and a
+    hint; nothing is created."""
     result = get_periodic_note(_index, period=period, date_str=date)
     return _read_envelope(result.get("path"), result)
 
@@ -1513,12 +1525,23 @@ def query_notes_tool(
     sort_desc: bool = False,
     limit: int = 50,
     folder: str = "",
+    title_contains: str | None = None,
+    path_glob: str | None = None,
+    mtime_after: str | None = None,
+    mtime_before: str | None = None,
+    min_words: int | None = None,
+    has_tasks: bool | None = None,
     vault: str | None = None,
 ) -> dict:
     """Dataview-like query: filter notes by tags, status, frontmatter, or inline fields.
     tags: all must match (AND). sort_by: 'path'|'title'|'created'|'mtime'.
     inline_field_filter: match Dataview inline fields (key:: value syntax).
-    data.items: [{path, title, tags, status, created, mtime, frontmatter, inline_fields}]."""
+    Frontmatter-free filters: title_contains (title or filename, case/accent-
+    insensitive), path_glob (fnmatch, '*' crosses '/'), mtime_after/mtime_before
+    (ISO date or datetime, inclusive), min_words, has_tasks.
+    created falls back to file birth time/mtime; created_source says which
+    ('frontmatter'|'birthtime'|'mtime'). data.items: [{path, title, tags,
+    status, created, created_source, mtime, frontmatter, inline_fields}]."""
     items = query_notes(
         _index,
         tags=tags,
@@ -1529,6 +1552,12 @@ def query_notes_tool(
         sort_desc=sort_desc,
         limit=limit,
         folder=folder,
+        title_contains=title_contains,
+        path_glob=path_glob,
+        mtime_after=mtime_after,
+        mtime_before=mtime_before,
+        min_words=min_words,
+        has_tasks=has_tasks,
     )
     return list_result(items, meta={"truncated": len(items) >= limit})
 
@@ -1804,9 +1833,14 @@ async def attachment_route(request: Request) -> Response:
 
 @mcp.tool()
 def list_templates_tool(vault: str | None = None) -> dict:
-    """List all template files in the Templates/ folder.
-    data.items is a list of template paths."""
-    return list_result(list_templates())
+    """List template files in the vault's configured templates folder.
+    data.items is a list of template paths; meta.templates_dir is the folder,
+    and meta.hint explains an empty result (e.g. the folder doesn't exist)."""
+    info = list_templates_info()
+    meta = {"templates_dir": info["templates_dir"]}
+    if "hint" in info:
+        meta["hint"] = info["hint"]
+    return list_result(info["items"], meta=meta)
 
 
 @mcp.tool()
@@ -1819,7 +1853,8 @@ def create_from_template_tool(
     create_only: bool = False,
     vault: str | None = None,
 ) -> dict:
-    """Render a template and write it as a new note.
+    """Render a template and write it as a new note. template_path: a vault
+    path, or a name relative to the configured templates folder.
     Built-in variables: {{date}}, {{time}}, {{title}}, {{week}}, {{month}}, {{year}}, {{weekday}}.
     Supports format specs: {{date:YYYY-MM}} → '2026-07'.
     Custom variables passed in 'variables' dict override built-ins.

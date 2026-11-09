@@ -16,6 +16,7 @@ from .safe_regex import (
     RegexTooLongError,
     compile_user_regex,
 )
+from .vault_layout import created_info
 
 
 def list_notes(folder: str = "", include_meta: bool = False) -> list:
@@ -33,16 +34,19 @@ def list_notes(folder: str = "", include_meta: bool = False) -> list:
             try:
                 raw = storage.read_text(rel)
                 note = parse_note(raw, path=rel)
+                created, created_source = created_info(note.frontmatter, resolved.stat_result)
                 results.append({
                     "path": rel,
                     "title": note.frontmatter.get("title", p.stem),
                     "tags": note.tags,
                     "status": note.frontmatter.get("status"),
-                    "created": str(note.frontmatter.get("created", "")),
+                    "created": created,
+                    "created_source": created_source,
                     "mtime": resolved.stat_result.st_mtime,
                 })
             except Exception:
-                results.append({"path": rel, "title": p.stem, "tags": [], "status": None, "created": "", "mtime": 0.0})
+                results.append({"path": rel, "title": p.stem, "tags": [], "status": None,
+                                "created": "", "created_source": "none", "mtime": 0.0})
         else:
             results.append(rel)
 
