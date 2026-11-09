@@ -7,6 +7,7 @@ from typing import Any
 
 from ..config import get_config
 from ..domain.index import VaultIndex
+from ..domain.links import LinkResolver, fold, link_kind
 from ..domain.parser import parse_note
 from ..storage.filesystem import VaultStorage
 from .scoping import ReadScope
@@ -39,18 +40,59 @@ def get_vault_conventions() -> str:
     return raw
 
 
-def get_broken_links(index: VaultIndex) -> list[dict]:
+def build_link_resolver(index: VaultIndex) -> LinkResolver:
+    """Resolver over every linkable vault file plus the index's aliases."""
+    return LinkResolver(index.list_link_targets(), index.get_alias_map())
+
+
+def find_broken_links(index: VaultIndex) -> dict:
+    """Broken wikilinks/embeds plus ambiguity warnings.
+
+    Returns {items: [{source, link, kind, suggestion}], warnings: [...]}.
+    One item per distinct (source, link); ``kind`` is 'attachment' or 'note';
+    ``suggestion`` is the closest existing file (accent/case-insensitive name
+    similarity) or None. A warning is emitted for each bare link name that
+    matches several notes/files (Obsidian then picks one by path)."""
     cfg = get_config()
-    results: list[dict] = []
-    for note_path in _readable_notes(index):
+    scope = ReadScope.current()
+    resolver = build_link_resolver(index)
+    include = None if scope.unrestricted else scope.allows
+    items: list[dict] = []
+    ambiguous: dict[str, dict] = {}
+    for note_path in _readable_notes(index, scope):
         try:
             note = _load_note(cfg.vault_path, note_path)
-            for wl in note.wikilinks:
-                if not index.has_note(wl.target):
-                    results.append({"source": note_path, "link": wl.target})
         except Exception:
-            pass
-    return results
+            continue
+        seen: set[str] = set()
+        for wl in note.wikilinks:
+            key = fold(wl.target)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates = resolver.candidates(wl.target, source=note_path)
+            if not candidates:
+                items.append({
+                    "source": note_path,
+                    "link": wl.target,
+                    "kind": link_kind(wl.target),
+                    "suggestion": resolver.suggest(wl.target, include=include),
+                })
+                continue
+            visible = [c for c in candidates if include is None or include(c)]
+            if len(visible) > 1 and "/" not in wl.target:
+                entry = ambiguous.setdefault(
+                    key,
+                    {"type": "ambiguous_link", "link": wl.target, "candidates": sorted(visible),
+                     "sources": []},
+                )
+                entry["sources"].append(note_path)
+    return {"items": items, "warnings": list(ambiguous.values())}
+
+
+def get_broken_links(index: VaultIndex) -> list[dict]:
+    """Broken links only (see find_broken_links)."""
+    return find_broken_links(index)["items"]
 
 
 def get_orphans(index: VaultIndex, exclude_folders: list[str] | None = None) -> list[str]:
@@ -209,7 +251,9 @@ def get_tasks(
 
 
 def resolve_alias(name: str, index: VaultIndex) -> str | None:
-    resolved = index.resolve_alias(name)
+    """Resolve a link target, alias, note stem or attachment file name
+    (``mobileExec.png``, ``images/x.png``) to its vault path."""
+    resolved = build_link_resolver(index).resolve(name) or index.resolve_alias(name)
     if resolved is None or not ReadScope.current().allows(resolved):
         return None
     return resolved

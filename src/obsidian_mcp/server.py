@@ -91,8 +91,8 @@ from .tools.kanban import (
 from .tools.lint import lint_schema
 from .tools.prompts import daily_note_prompt, weekly_review_prompt
 from .tools.query import (
+    find_broken_links,
     get_backlinks,
-    get_broken_links,
     get_link_graph,
     get_orphans,
     get_periodic_note,
@@ -288,7 +288,8 @@ renames, and `ENABLE_BULK_REPLACE` registers bulk replacement.
   Dataview-like filter; frontmatter_filter values may be exact or an operator dict
   ($ne/$eq/$in/$nin/$exists)
 - `get_backlinks_tool(path)` — notes that link to this note
-- `get_broken_links_tool()` — wikilinks pointing to non-existent notes
+- `get_broken_links_tool()` — wikilinks/embeds resolving to no file, with
+  kind (note|attachment) and a suggested existing path
 - `get_orphans_tool(exclude_folders)` — notes with no incoming backlinks
 - `get_link_graph_tool(root, depth, direction)` — BFS link graph; direction: outgoing|incoming|both
 - `get_audit_log_tool(path, tool, since, limit)` — write-action audit trail
@@ -301,7 +302,7 @@ renames, and `ENABLE_BULK_REPLACE` registers bulk replacement.
   carrying one tag, use `query_notes_tool(tags=[tag])`
 - `get_periodic_note_tool(period, date)` — periodic notes;
   period: daily|weekly|monthly|quarterly|yearly, date: today|yesterday|YYYY-MM-DD
-- `resolve_alias_tool(name)` — alias or stem → canonical vault path
+- `resolve_alias_tool(name)` — alias, stem or attachment name → canonical vault path
 
 ### Multi-Vault
 - `list_vaults_tool()` — vault(s) the current identity may access, as
@@ -1403,9 +1404,14 @@ def lint_schema_tool(vault: str | None = None) -> dict:
 
 @mcp.tool()
 def get_broken_links_tool(vault: str | None = None) -> dict:
-    """Find all wikilinks in the vault that point to non-existent notes.
-    data.items: [{source, link}]."""
-    return list_result(get_broken_links(_index))
+    """Find wikilinks/embeds that resolve to no vault file (Obsidian rules:
+    case-insensitive, attachments matched by file name vault-wide; links in
+    code and %% comments ignored).
+    data.items: [{source, link, kind: 'note'|'attachment', suggestion}] —
+    suggestion is the closest existing path or null.
+    meta.warnings: links whose bare name matches several files."""
+    report = find_broken_links(_index)
+    return list_result(report["items"], meta={"warnings": report["warnings"]})
 
 
 @mcp.tool()
@@ -1497,7 +1503,8 @@ def get_periodic_note_tool(period: str = "daily", date: str = "today", vault: st
 
 @mcp.tool()
 def resolve_alias_tool(name: str, vault: str | None = None) -> dict:
-    """Resolve a note alias or stem to its real vault path.
+    """Resolve a note alias, stem, link target or attachment file name
+    (e.g. 'diagram.png') to its real vault path.
     `path` and data.resolved are null (and `path` omitted) if not found."""
     resolved = resolve_alias(name, _index)
     return read_result(resolved, {"name": name, "resolved": resolved})
