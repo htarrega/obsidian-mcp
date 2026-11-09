@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -95,6 +96,8 @@ def search_notes(
     frontmatter_filter: dict | None = None,
     field: str | None = None,
     threshold: float = 0.8,
+    max_snippets_per_note: int = 2,
+    context_lines: int = 1,
 ) -> list[dict]:
     """Full-text search across the vault.
     mode: 'exact' (default) | 'regex' | 'fuzzy'.
@@ -104,7 +107,17 @@ def search_notes(
     and grepping results after.
     field: None/'body' (default, search line-by-line in the note body) |
     'filename' (match only against the file name, not its content).
-    threshold: fuzzy-match similarity cutoff (0-1, only used when mode='fuzzy')."""
+    threshold: fuzzy-match similarity cutoff (0-1, only used when mode='fuzzy').
+    max_snippets_per_note / context_lines: shape of the returned snippets
+    (overlapping windows are merged; long lines are clipped around the match).
+    exact/fuzzy matching is case- and accent-insensitive ("Siplan" finds
+    "Siplán"); regex mode matches the raw text."""
+    if not 1 <= max_snippets_per_note <= MAX_SNIPPETS_PER_NOTE:
+        raise ValueError(
+            f"max_snippets_per_note must be between 1 and {MAX_SNIPPETS_PER_NOTE}"
+        )
+    if not 0 <= context_lines <= MAX_CONTEXT_LINES:
+        raise ValueError(f"context_lines must be between 0 and {MAX_CONTEXT_LINES}")
     cfg = get_config()
     storage = VaultStorage.from_config(cfg)
     results: list[dict] = []
@@ -137,7 +150,10 @@ def search_notes(
                 snippets, score = _match_filename(p.name, query, pattern, mode, threshold)
             else:
                 lines = raw.splitlines()
-                snippets, score = _find_snippets(lines, query, pattern, mode, threshold)
+                snippets, score = _find_snippets(
+                    lines, query, pattern, mode, threshold,
+                    max_snippets=max_snippets_per_note, context_lines=context_lines,
+                )
             if score == 0:
                 continue
 
@@ -275,49 +291,128 @@ def _extract_section(content: str, heading: str) -> str:
     return "".join(result) if result else content
 
 
+MAX_SNIPPETS_PER_NOTE = 10
+MAX_CONTEXT_LINES = 5
+# Longest text returned for a single snippet line; longer lines are clipped
+# (around the match on matching lines) and marked with an ellipsis.
+SNIPPET_LINE_MAX_CHARS = 240
+
+
+def _fold(text: str) -> tuple[str, list[int]]:
+    """Lower-case and strip diacritics ("Siplán" -> "siplan").
+
+    Returns the folded text plus, for each folded character, the index of the
+    original character it came from, so match offsets map back to the raw line.
+    """
+    out: list[str] = []
+    index: list[int] = []
+    for i, ch in enumerate(text):
+        if ch.isascii():
+            folded = ch.lower()
+        else:
+            folded = "".join(
+                c for c in unicodedata.normalize("NFKD", ch)
+                if not unicodedata.combining(c)
+            ).lower()
+        out.append(folded)
+        index.extend([i] * len(folded))
+    return "".join(out), index
+
+
+def _clip(text: str, center: int | None) -> str:
+    """Cap a snippet line at SNIPPET_LINE_MAX_CHARS, keeping `center` visible."""
+    limit = SNIPPET_LINE_MAX_CHARS
+    if len(text) <= limit:
+        return text
+    if center is None:
+        return text[: limit - 1] + "…"
+    start = max(0, min(center - limit // 3, len(text) - limit))
+    end = start + limit
+    clipped = text[start:end]
+    if start > 0:
+        clipped = "…" + clipped[1:]
+    if end < len(text):
+        clipped = clipped[:-1] + "…"
+    return clipped
+
+
 def _find_snippets(
     lines: list[str],
     query: str,
     pattern: re.Pattern | None,
     mode: str,
     threshold: float = 0.8,
+    max_snippets: int = 3,
+    context_lines: int = 2,
 ) -> tuple[list[dict], int]:
-    snippets: list[dict] = []
+    """Score every line and build merged, length-capped context windows.
+
+    The score sums over all matching lines; only the first `max_snippets`
+    windows (after merging overlapping/adjacent ones) are returned.
+    """
     total_score = 0
-    query_lower = query.lower()
+    query_folded, _ = _fold(query)
+    matches: dict[int, int | None] = {}  # line index -> match offset
 
     for i, line in enumerate(lines):
-        line_lower = line.lower()
-        matched = False
-
+        offset: int | None = None
         if mode == "regex" and pattern:
-            matched = bool(pattern.search(line))
-            line_score = 2 if matched else 0
-        elif mode == "fuzzy":
-            line_score = _fuzzy_score(line_lower, query_lower, threshold)
-            matched = line_score > 0
+            m = pattern.search(line)
+            line_score = 2 if m else 0
+            offset = m.start() if m else None
         else:
-            if query_lower in line_lower:
-                matched = True
-                if re.search(rf"\b{re.escape(query_lower)}\b", line_lower):
-                    line_score = 3 if line_lower == query_lower else 2
+            line_folded, index = _fold(line)
+            if mode == "fuzzy":
+                line_score = _fuzzy_score(line_folded, query_folded, threshold)
+            elif query_folded and query_folded in line_folded:
+                if re.search(rf"\b{re.escape(query_folded)}\b", line_folded):
+                    line_score = 3 if line_folded == query_folded else 2
                 else:
                     line_score = 1
             else:
                 line_score = 0
+            pos = line_folded.find(query_folded) if query_folded else -1
+            if pos >= 0 and index:
+                offset = index[pos]
 
-        if matched:
+        if line_score > 0:
             total_score += line_score
-            context_start = max(0, i - 2)
-            context_end = min(len(lines), i + 3)
-            snippet_lines = [
-                {"line": j + 1, "text": lines[j], "match": j == i}
-                for j in range(context_start, context_end)
-            ]
-            snippets.append({"line": i + 1, "context": snippet_lines})
-            if len(snippets) >= 3:
-                break
+            matches[i] = offset
 
+    # Merge overlapping/adjacent windows, but cap a merged window's height so a
+    # run of matching lines cannot turn into one huge snippet.
+    max_height = 2 * context_lines + 5
+    windows: list[list[int]] = []  # [start, end) line ranges
+    for i in matches:
+        start = max(0, i - context_lines)
+        end = min(len(lines), i + context_lines + 1)
+        if windows and start <= windows[-1][1]:
+            last = windows[-1]
+            if i < last[1]:
+                continue  # already visible in the previous window
+            capped_end = min(end, last[0] + max_height)
+            if capped_end > i:
+                last[1] = max(last[1], capped_end)
+                continue
+            start = last[1]
+        if len(windows) >= max_snippets:
+            break
+        windows.append([start, end])
+
+    snippets: list[dict] = []
+    for start, end in windows:
+        first_match = next(j for j in range(start, end) if j in matches)
+        snippets.append({
+            "line": first_match + 1,
+            "context": [
+                {
+                    "line": j + 1,
+                    "text": _clip(lines[j], matches.get(j)),
+                    "match": j in matches,
+                }
+                for j in range(start, end)
+            ],
+        })
     return snippets, total_score
 
 

@@ -239,8 +239,10 @@ have to guess how a particular tool replies:
   text, so reach for it on large notes) | 'rendered' (![[embed]]
   transclusions resolved inline; `depth` applies here only, 0=raw, 1=one
   level, 2=nested)
-- `search_notes_tool(query, tag, mode, limit, frontmatter_filter, field, threshold)` — full-text search
-  with snippets; mode: exact|regex|fuzzy; field: None|'filename'; combine with frontmatter_filter in one call
+- `search_notes_tool(query, tag, mode, limit, frontmatter_filter, field, threshold, max_snippets_per_note,
+  context_lines)` — full-text search with snippets (default 2 per note, 1 line of context, merged
+  windows); mode: exact|regex|fuzzy (exact/fuzzy ignore case and accents); field: None|'filename';
+  combine with frontmatter_filter in one call
 - `find_similar_notes_tool(text, limit, exclude_path, min_score)` — TF-IDF similarity search for
   duplicate prevention ("does this topic already exist under different wording?")
 - `lint_schema_tool()` — validate frontmatter against the enums declared in _AI_INSTRUCTIONS.md
@@ -942,11 +944,16 @@ def search_notes_tool(
     frontmatter_filter: dict | None = None,
     field: str | None = None,
     threshold: float = 0.8,
+    max_snippets_per_note: int = 2,
+    context_lines: int = 1,
     vault: str | None = None,
 ) -> dict:
     """Full-text search with snippets and relevance ranking.
-    mode: 'exact' (default) | 'regex' | 'fuzzy'.
-    data.items: [{path, score, snippets, tags}].
+    mode: 'exact' (default) | 'regex' | 'fuzzy'. exact/fuzzy ignore case and
+    accents ("Siplan" finds "Siplán").
+    data.items: [{path, score, snippets: [{line, context: [{line, text, match}]}], tags}].
+    max_snippets_per_note (1-10, default 2), context_lines around each match
+    (0-5, default 1); overlapping windows are merged, long lines clipped.
     frontmatter_filter: combine with the text search in one call — same shape
     as query_notes_tool's (plain value = exact match, or {"$ne": v} /
     {"$nin": [...]} / {"$exists": bool}).
@@ -957,6 +964,7 @@ def search_notes_tool(
     items = search_notes(
         query, tag=tag, mode=mode, limit=limit,
         frontmatter_filter=frontmatter_filter, field=field, threshold=threshold,
+        max_snippets_per_note=max_snippets_per_note, context_lines=context_lines,
     )
     return list_result(items, meta={"truncated": len(items) >= limit})
 

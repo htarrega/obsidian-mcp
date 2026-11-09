@@ -164,6 +164,81 @@ def test_search_frontmatter_filter_operator(vault_factory):
     assert [r["path"] for r in results] == ["a.md"]
 
 
+def test_search_is_accent_insensitive(vault_factory):
+    vault_factory({"a.md": "Reunión con Siplán mañana\n", "b.md": "nothing here\n"})
+    assert [r["path"] for r in search_notes("Siplan")] == ["a.md"]
+    assert [r["path"] for r in search_notes("siplán")] == ["a.md"]
+    assert [r["path"] for r in search_notes("reunion con siplan")] == ["a.md"]
+    # Folding also applies the other way round and in fuzzy mode.
+    vault_factory({"c.md": "Siplan sin tilde\n"})
+    assert sorted(r["path"] for r in search_notes("Siplán")) == ["a.md", "c.md"]
+    assert sorted(r["path"] for r in search_notes("Siplán", mode="fuzzy")) == ["a.md", "c.md"]
+
+
+def test_search_accent_insensitive_keeps_original_text(vault_factory):
+    vault_factory({"a.md": "Siplán\n"})
+    snippet = search_notes("siplan")[0]["snippets"][0]
+    assert snippet["context"][0]["text"] == "Siplán"
+    assert snippet["context"][0]["match"] is True
+
+
+def test_search_defaults_two_snippets_one_context_line(vault_factory):
+    body = "\n".join(
+        ["hit"] + ["filler"] * 5 + ["hit"] + ["filler"] * 5 + ["hit"] + ["filler"] * 5
+    )
+    vault_factory({"n.md": body})
+    result = search_notes("hit")[0]
+    assert len(result["snippets"]) == 2
+    assert [c["line"] for c in result["snippets"][0]["context"]] == [1, 2]
+    assert [c["line"] for c in result["snippets"][1]["context"]] == [6, 7, 8]
+    # Score still counts every matching line, not only the returned ones.
+    assert result["score"] == 9  # 3 exact-line matches x 3
+
+
+def test_search_merges_overlapping_windows(vault_factory):
+    vault_factory({"n.md": "a\nhit one\nb\nhit two\nc\n"})
+    result = search_notes("hit", context_lines=1)[0]
+    assert len(result["snippets"]) == 1
+    ctx = result["snippets"][0]["context"]
+    assert [c["line"] for c in ctx] == [1, 2, 3, 4, 5]
+    assert [c["match"] for c in ctx] == [False, True, False, True, False]
+    lines = [c["line"] for s in result["snippets"] for c in s["context"]]
+    assert len(lines) == len(set(lines))  # no line appears twice
+
+
+def test_search_caps_merged_window_height(vault_factory):
+    vault_factory({"n.md": "\n".join(["hit"] * 50)})
+    result = search_notes("hit", context_lines=1, max_snippets_per_note=2)[0]
+    heights = [len(s["context"]) for s in result["snippets"]]
+    assert len(heights) == 2
+    assert all(h <= 2 * 1 + 5 for h in heights)
+
+
+def test_search_snippet_params(vault_factory):
+    vault_factory({"n.md": "\n".join(f"line {i} hit" for i in range(20))})
+    result = search_notes("hit", context_lines=0, max_snippets_per_note=5)[0]
+    assert len(result["snippets"]) >= 1
+    assert all(c["match"] for s in result["snippets"] for c in s["context"])
+    with pytest.raises(ValueError):
+        search_notes("hit", max_snippets_per_note=0)
+    with pytest.raises(ValueError):
+        search_notes("hit", context_lines=99)
+
+
+def test_search_clips_long_lines_around_match(vault_factory):
+    from obsidian_mcp.tools.read import SNIPPET_LINE_MAX_CHARS
+
+    long_line = "x" * 1000 + " needle " + "y" * 1000
+    vault_factory({"n.md": "short\n" + long_line + "\n" + "z" * 1000 + "\n"})
+    ctx = search_notes("needle")[0]["snippets"][0]["context"]
+    by_line = {c["line"]: c["text"] for c in ctx}
+    assert "needle" in by_line[2]
+    assert len(by_line[2]) <= SNIPPET_LINE_MAX_CHARS
+    assert by_line[2].startswith("…") and by_line[2].endswith("…")
+    assert len(by_line[3]) <= SNIPPET_LINE_MAX_CHARS
+    assert by_line[1] == "short"
+
+
 # ── get_note_outline ──────────────────────────────────────────────────────
 
 def test_get_note_outline_headings(vault_factory):
