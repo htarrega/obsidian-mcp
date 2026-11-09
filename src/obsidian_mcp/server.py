@@ -97,7 +97,7 @@ from .tools.query import (
     get_orphans,
     get_periodic_note,
     get_tag_tree,
-    get_tasks,
+    get_tasks_page,
     get_vault_conventions,
     get_vault_stats,
     list_all_tags,
@@ -296,7 +296,9 @@ renames, and `ENABLE_BULK_REPLACE` registers bulk replacement.
   (what changed, when, with which tool), most recent first; pass `path=` to
   get the history of one note
 - `get_vault_stats_tool()` — note/link counts, orphans, most-linked notes
-- `get_tasks_tool(status, folder, tag)` — tasks across vault; status: open|done|all
+- `get_tasks_tool(status, folder, tag, limit, offset, dedupe, group_by, exclude_folders,
+  path_glob, summary_only)` — tasks across vault, paged (meta.total/truncated);
+  status: open|done|all; dedupe collapses repeated worklog tasks
 - `list_all_tags_tool(sort_by, mode)` — every tag; mode: 'flat' (default,
   with counts) | 'tree' (nested by slash hierarchy). To list the notes
   carrying one tag, use `query_notes_tool(tags=[tag])`
@@ -1477,18 +1479,44 @@ def get_tasks_tool(
     tag: str | None = None,
     due_before: str | None = None,
     due_after: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    dedupe: bool = False,
+    group_by: str = "none",
+    exclude_folders: list[str] | None = None,
+    path_glob: str | None = None,
+    summary_only: bool = False,
     vault: str | None = None,
 ) -> dict:
-    """Return tasks from across the vault.
-    status: 'open' | 'done' | 'all'. Optionally filter by folder or tag.
-    due_before/due_after: 'YYYY-MM-DD', inclusive; matches the Tasks-plugin
-    📅 due date (tasks without one never match either filter).
-    Parses Tasks-plugin emoji markers: 📅 due, ✅ done date, 🔁 recurrence,
-    ⏫/🔼/🔽 priority (high/medium/low) — stripped from `text` into their own fields.
-    data.items: [{text, done, source, line, due, recurrence, priority, done_date}]."""
-    return list_result(
-        get_tasks(_index, status=status, folder=folder, tag=tag, due_before=due_before, due_after=due_after)
+    """Return checkbox tasks from across the vault, paged.
+    status: 'open' | 'done' | 'all'. folder: only this folder;
+    exclude_folders: skip these (bare name = any segment, 'a/b' = prefix);
+    path_glob: fnmatch pattern on the note path. tag: notes with this tag.
+    due_before/due_after: 'YYYY-MM-DD', inclusive, on the 📅 due date.
+    limit (default 100, max 1000) / offset page the results.
+    dedupe: collapse the same text repeated in one note (e.g. worklogs) into
+    its last occurrence, adding occurrences/first_line/last_line.
+    group_by: 'none' | 'source' (data.items: [{source, tasks}]).
+    summary_only: per-note counts [{source, open, done, total}] instead.
+    Items: {text, done, source, line, due, recurrence, priority, done_date};
+    Tasks-plugin emoji markers are stripped from text into those fields.
+    meta: {total, returned, truncated, offset, limit}."""
+    page = get_tasks_page(
+        _index,
+        status=status,
+        folder=folder,
+        tag=tag,
+        due_before=due_before,
+        due_after=due_after,
+        limit=limit,
+        offset=offset,
+        dedupe=dedupe,
+        group_by=group_by,
+        exclude_folders=exclude_folders,
+        path_glob=path_glob,
+        summary_only=summary_only,
     )
+    return list_result(page["items"], meta=page["meta"])
 
 
 @mcp.tool()

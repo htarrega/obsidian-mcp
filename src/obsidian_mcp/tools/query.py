@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 from collections import deque
 from datetime import date, timedelta
 from pathlib import Path
@@ -204,6 +205,53 @@ def get_tag_tree(index: VaultIndex) -> dict:
     return index.get_tag_tree(include=None if scope.unrestricted else scope.allows)
 
 
+TASKS_DEFAULT_LIMIT = 100
+TASKS_MAX_LIMIT = 1000
+TASK_GROUP_BY = ("none", "source")
+
+
+def _normalize_task_text(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _folder_excluded(note_path: str, exclude_folders: list[str]) -> bool:
+    """A folder with a "/" is a vault-relative prefix; a bare name matches
+    any folder segment of the path."""
+    parts = note_path.split("/")[:-1]
+    for folder in exclude_folders:
+        folder = folder.strip().strip("/")
+        if not folder:
+            continue
+        if "/" in folder:
+            if note_path.startswith(folder + "/"):
+                return True
+        elif folder in parts:
+            return True
+    return False
+
+
+def _dedupe_tasks(tasks: list[dict]) -> list[dict]:
+    """Collapse tasks with the same normalized text in the same note, keeping
+    the last occurrence (by line) with occurrences/first_line/last_line."""
+    groups: dict[tuple[str, str], dict] = {}
+    for task in tasks:
+        key = (task["source"], _normalize_task_text(task["text"]))
+        group = groups.get(key)
+        if group is None:
+            groups[key] = {**task, "occurrences": 1, "first_line": task["line"],
+                           "last_line": task["line"]}
+            continue
+        first_line = min(group["first_line"], task["line"])
+        occurrences = group["occurrences"] + 1
+        if task["line"] >= group["last_line"]:
+            group.clear()
+            group.update(task)
+            group["last_line"] = task["line"]
+        group["first_line"] = first_line
+        group["occurrences"] = occurrences
+    return sorted(groups.values(), key=lambda t: (t["source"], t["line"]))
+
+
 def get_tasks(
     index: VaultIndex,
     status: str = "open",
@@ -211,43 +259,126 @@ def get_tasks(
     tag: str | None = None,
     due_before: str | None = None,
     due_after: str | None = None,
+    *,
+    exclude_folders: list[str] | None = None,
+    path_glob: str | None = None,
+    dedupe: bool = False,
 ) -> list[dict]:
-    """due_before/due_after: 'YYYY-MM-DD', inclusive, compared against each
-    task's 📅 due date (tasks without a due date never match either filter)."""
+    """Every matching task, unpaged (see get_tasks_page for the tool view).
+
+    status: 'open' | 'done' | 'all'. due_before/due_after: 'YYYY-MM-DD',
+    inclusive, compared against each task's 📅 due date (tasks without a due
+    date never match either filter). path_glob: fnmatch-style pattern on the
+    note path, case-insensitive ("*" also crosses "/")."""
     cfg = get_config()
     results: list[dict] = []
+    exclude_folders = exclude_folders or []
+    glob = path_glob.casefold() if path_glob else None
 
     for note_path in _readable_notes(index):
         if folder and not note_path.startswith(folder.rstrip("/") + "/"):
             continue
+        if exclude_folders and _folder_excluded(note_path, exclude_folders):
+            continue
+        if glob and not fnmatch.fnmatchcase(note_path.casefold(), glob):
+            continue
         try:
             note = _load_note(cfg.vault_path, note_path)
-            if tag and tag not in note.tags:
-                continue
-            for task in note.tasks:
-                if status == "open" and task.done:
-                    continue
-                if status == "done" and not task.done:
-                    continue
-                if (due_before or due_after) and not task.due:
-                    continue
-                if due_before and task.due > due_before:
-                    continue
-                if due_after and task.due < due_after:
-                    continue
-                results.append({
-                    "text": task.text,
-                    "done": task.done,
-                    "source": note_path,
-                    "line": task.line,
-                    "due": task.due,
-                    "recurrence": task.recurrence,
-                    "priority": task.priority,
-                    "done_date": task.done_date,
-                })
         except Exception:
-            pass
-    return results
+            continue
+        if tag and tag not in note.tags:
+            continue
+        for task in note.tasks:
+            if status == "open" and task.done:
+                continue
+            if status == "done" and not task.done:
+                continue
+            if (due_before or due_after) and not task.due:
+                continue
+            if due_before and task.due > due_before:
+                continue
+            if due_after and task.due < due_after:
+                continue
+            results.append({
+                "text": task.text,
+                "done": task.done,
+                "source": note_path,
+                "line": task.line,
+                "due": task.due,
+                "recurrence": task.recurrence,
+                "priority": task.priority,
+                "done_date": task.done_date,
+            })
+    return _dedupe_tasks(results) if dedupe else results
+
+
+def get_tasks_page(
+    index: VaultIndex,
+    status: str = "open",
+    folder: str = "",
+    tag: str | None = None,
+    due_before: str | None = None,
+    due_after: str | None = None,
+    *,
+    limit: int = TASKS_DEFAULT_LIMIT,
+    offset: int = 0,
+    dedupe: bool = False,
+    group_by: str = "none",
+    exclude_folders: list[str] | None = None,
+    path_glob: str | None = None,
+    summary_only: bool = False,
+) -> dict:
+    """Paged task listing: {items, meta: {total, returned, truncated, offset}}.
+
+    group_by='source' groups the page's tasks per note. summary_only returns
+    per-note counts {source, open, done, total} (status is ignored there) and
+    pages over notes instead of tasks."""
+    if group_by not in TASK_GROUP_BY:
+        raise ValueError(f"Unknown group_by {group_by!r}; expected 'none' or 'source'")
+    if offset < 0:
+        raise ValueError("offset must be >= 0")
+    limit = max(1, min(int(limit), TASKS_MAX_LIMIT))
+    tasks = get_tasks(
+        index,
+        status="all" if summary_only else status,
+        folder=folder,
+        tag=tag,
+        due_before=due_before,
+        due_after=due_after,
+        exclude_folders=exclude_folders,
+        path_glob=path_glob,
+        dedupe=dedupe,
+    )
+    if summary_only:
+        counts: dict[str, dict] = {}
+        for task in tasks:
+            entry = counts.setdefault(
+                task["source"], {"source": task["source"], "open": 0, "done": 0, "total": 0}
+            )
+            entry["done" if task["done"] else "open"] += 1
+            entry["total"] += 1
+        rows: list[dict] = list(counts.values())
+    else:
+        rows = tasks
+    page = rows[offset:offset + limit]
+    if group_by == "source" and not summary_only:
+        grouped: dict[str, dict] = {}
+        for task in page:
+            entry = grouped.setdefault(task["source"], {"source": task["source"], "tasks": []})
+            entry["tasks"].append({k: v for k, v in task.items() if k != "source"})
+        items: list[dict] = list(grouped.values())
+    else:
+        items = page
+    return {
+        "items": items,
+        "meta": {
+            "total": len(rows),
+            "returned": len(page),
+            "truncated": offset + len(page) < len(rows),
+            "offset": offset,
+            "limit": limit,
+        },
+    }
 
 
 def resolve_alias(name: str, index: VaultIndex) -> str | None:
