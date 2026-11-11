@@ -20,7 +20,7 @@ from typing import Any, Literal
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from ..envelope import read_result
+from ..envelope import envelope_output_schema, read_result
 from .redact import redact, redact_obj
 from .runner import ObCommandError, ObError
 from .service import ObService, get_service
@@ -424,7 +424,7 @@ def register_ob_tools(mcp: Any, flags: ObFlags | None = None) -> list[str]:
     registered: list[str] = []
 
     def add(fn: Any, annotations: ToolAnnotations) -> None:
-        mcp.tool(annotations=annotations)(fn)
+        mcp.tool(annotations=annotations, output_schema=envelope_output_schema())(fn)
         registered.append(fn.__name__)
 
     add(sync_status, _READ_ONLY)

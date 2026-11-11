@@ -110,6 +110,31 @@ These mirror an Obsidian-CLI style workflow (`read`, `outline`, `links`,
 
 - `weekly_review`, `daily_note` — starting points for common workflows
 
+## Output schema and error codes
+
+Every tool advertises the same `outputSchema`: the response envelope
+`{success, path?, revision?, data, meta?}`. `data` and `meta` are free-form
+objects (their contents are described in each tool's description); a
+listing's rows are in `data.items`.
+
+A failed call is an MCP error result (`isError: true`). Its text content is
+the human-readable message, and its structured content still fits the
+schema: `{success: false, data: {}, code, message}`. Branch on `code`, which
+is stable:
+
+| `code` | Meaning |
+|---|---|
+| `invalid_argument` | Bad path, value, file type, regex or arguments |
+| `not_found` | The note, file or folder does not exist |
+| `already_exists` | The target path is already taken |
+| `permission_denied` | Outside the readable/writable part of the vault (policy, `READ_ONLY`, vault access) |
+| `permanent_delete_disabled` | Permanent deletion asked but `ALLOW_PERMANENT_DELETE` is off |
+| `revision_conflict` | `expected_revision` no longer matches; also has `error`, `path`, `expected_revision`, `actual_revision` |
+| `precondition_required` | Strict mode: overwriting needs `expected_revision`; also has `error`, `path` |
+| `unavailable` | Transient, retry later (e.g. the index is still building) |
+| `tool_error` | A deliberate tool error with no more specific code (e.g. the `ob` tools) |
+| `internal` | Unexpected failure; with `MASK_ERROR_DETAILS` the message is generic |
+
 ## Optimistic concurrency
 
 Every read returns a `revision` (`sha256:...`). Pass it back as

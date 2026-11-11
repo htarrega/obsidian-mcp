@@ -36,11 +36,12 @@ check `data.summary.failed` for partial failure.
 
 ## Hard failures
 
-Hard failures (bad path, permission denied, revision conflict) are **not**
-expressed in the envelope — they stay on the MCP exception channel
-(`VaultPathError`, `WritePermissionError`, `RevisionConflictError`, …).
-`success: false` is used only for per-item batch failures, which are
-in-band because some items in a batch may have succeeded while others
+Hard failures (bad path, permission denied, revision conflict) are MCP
+error results (`isError: true`), never a successful envelope. Their
+structured content is `{success: false, data: {}, code, message}` with a
+stable `code` — see [Output schema and error codes](tools.md#output-schema-and-error-codes).
+Inside a batch, per-item failures are in-band (`success: false` on the
+item), because some items in a batch may have succeeded while others
 failed.
 
 See [CHANGELOG.md](../CHANGELOG.md) for the full list of tools removed or

@@ -24,16 +24,79 @@ Rules
 * ``meta`` is present only when there is something to say. The operation verb
   of a write lives in ``meta.action`` — operation metadata, not payload.
 
-Hard failures are *not* expressed here. They stay on the MCP exception channel
-(``VaultPathError``, ``WritePermissionError``, ``RevisionConflictError``, …).
-The per-item ``success``/``error`` fields of :func:`batch_result` are the one
-exception: a batch reports partial failure in-band, because some of its items
-may have succeeded.
+Hard failures are MCP error results (``isError: true``), never a successful
+envelope. Their structured content is built by :func:`error_result` and still
+fits :data:`ENVELOPE_SCHEMA` — ``success: false``, an empty ``data``, a stable
+machine-readable ``code`` (one of :data:`ERROR_CODES`) and the human
+``message`` — so a client that validates every result against the advertised
+schema does not choke on errors (see :mod:`obsidian_mcp.errors`). The
+per-item ``success``/``error`` fields of :func:`batch_result` are a different
+thing: a batch reports partial failure in-band, because some of its items may
+have succeeded.
 """
 
 from __future__ import annotations
 
+import copy
 from typing import Any
+
+# Stable error codes carried by every tool error result (``code``). Clients
+# branch on these; the human ``message`` next to them is free text.
+ERROR_CODES: tuple[str, ...] = (
+    "invalid_argument",  # bad path, bad value, wrong file type, bad regex, ...
+    "not_found",  # the note/file/folder does not exist
+    "already_exists",  # the target path is already taken
+    "permission_denied",  # outside the readable/writable part of the vault
+    "permanent_delete_disabled",  # permanent delete asked, ALLOW_PERMANENT_DELETE off
+    "revision_conflict",  # expected_revision no longer matches the file
+    "precondition_required",  # strict mode: overwriting needs expected_revision
+    "unavailable",  # transient: e.g. the vault index is still building
+    "tool_error",  # a deliberate tool error with no more specific code
+    "internal",  # unexpected failure; details may be masked
+)
+
+# The one output schema every tool advertises. ``data`` and ``meta`` stay
+# loosely typed objects: this is the envelope contract, not per-tool payloads.
+ENVELOPE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Result envelope shared by every tool. On an error result (isError) "
+        "success is false, data is empty and code/message describe the error."
+    ),
+    "properties": {
+        "success": {"type": "boolean"},
+        "path": {
+            "type": "string",
+            "description": "Vault path of the single item addressed; absent for listings.",
+        },
+        "revision": {
+            "type": "string",
+            "description": "Opaque token to pass back as expected_revision.",
+        },
+        "data": {"type": "object", "additionalProperties": True},
+        "meta": {
+            "type": "object",
+            "additionalProperties": True,
+            "description": "count, truncated, action, dry_run, ... when there is something to say.",
+        },
+        "code": {
+            "type": "string",
+            "enum": list(ERROR_CODES),
+            "description": "Error results only: stable machine-readable error code.",
+        },
+        "message": {
+            "type": "string",
+            "description": "Error results only: human-readable error message.",
+        },
+    },
+    "required": ["success", "data"],
+    "additionalProperties": True,
+}
+
+
+def envelope_output_schema() -> dict[str, Any]:
+    """A fresh copy of :data:`ENVELOPE_SCHEMA` to hand to one tool registration."""
+    return copy.deepcopy(ENVELOPE_SCHEMA)
 
 
 def _envelope(
@@ -143,3 +206,14 @@ def batch_summary(results: list[dict]) -> dict:
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
     }
+
+
+def error_result(code: str, message: str, **details: Any) -> dict:
+    """Structured content of a tool error result.
+
+    ``details`` adds error-specific keys (a revision conflict keeps its
+    ``error``/``path``/``expected_revision``/``actual_revision``).
+    """
+    if code not in ERROR_CODES:
+        raise ValueError(f"unknown error code {code!r}")
+    return {**details, "success": False, "data": {}, "code": code, "message": message}
