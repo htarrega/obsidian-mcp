@@ -8,7 +8,7 @@ index of what exists and where to look for more.
 | Category | Tools |
 |---|---|
 | **Read** | `list_notes`, `list_files`, `read_note` (mode: `full`/`outline`/`rendered`; path or bare note name), `get_outline`, `get_recent_notes`, `search_notes`, `find_similar_notes` |
-| **Write** | `write_note`, `patch_note`, `patch_note_text`, `append_to_note`, `prepend_to_note`, `set_task_status`, `patch_frontmatter` (one note via `path=` or many via `paths=`), `manage_tags`, `move_note`†, `find_replace_in_vault`† |
+| **Write** | `write_note`, `patch_note`, `patch_note_text`, `append_to_note`, `prepend_to_note`, `set_task_status`, `patch_frontmatter` (one note via `path=` or many via `paths=`), `manage_tags`, `batch_edit` (several edits on one or more notes, all or nothing), `copy_note`, `move_note`† (rewrites links; all or nothing; `dry_run`), `find_replace_in_vault`† |
 | **Delete** | `delete`* (`trash=True` dispatches on file vs. folder), `restore`*, `list_trash`* |
 | **Folders** | `list_folder`, `create_folder`, `rename_folder`† |
 | **Query** | `query_notes`, `get_backlinks`, `get_outgoing_links`, `get_broken_links`, `get_orphans`, `get_link_graph`, `get_vault_stats`, `get_tasks`, `resolve_alias` |

@@ -31,7 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `read_note_tool` and `get_backlinks_tool` accept a bare note name,
   resolved like a wikilink (`meta.resolved_from`, `meta.candidates`).
 - `deploy/env.example` ships an annotated production `TOOLS_ALLOWLIST`
-  (23 tools) with prompts and resources off.
+  (27 tools) with prompts and resources off.
+- `copy_note_tool`: copy a note on the server (exact bytes, create-only,
+  `dry_run`); `data.name_conflicts` flags notes that share the new name.
+- `batch_edit_tool`: up to 50 edits (`replace`, `section`, `append`,
+  `prepend`, `write`) over one or more notes, applied in order and all or
+  nothing. Every edit is checked before anything is written, and notes
+  already written are restored if a later write fails. Per-edit
+  `expected_revision`, `dry_run`, diffs capped at 4000 characters.
+- `move_note_tool` gained `dry_run` (`data.links` with counts per note),
+  rewrites the moved note's own self-links, `[[note.md]]` and table-escaped
+  `[[note\|alias]]`, and refuses a new name another note already uses (or an
+  old name shared with another note, whose bare links would be ambiguous).
+- `patch_note_tool`, `move_note_tool`, `copy_note_tool` and
+  `batch_edit_tool` declare MCP tool annotations and titles.
+- Production (`deploy/env.example`): `ENABLE_MOVE=true`, and `patch_note`,
+  `batch_edit`, `move_note` and `copy_note` are allowlisted.
 
 ### Changed
 
@@ -59,6 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `patch_note_text_tool` and `find_replace_in_vault_tool` in `exact` mode
+  now insert the replacement literally; a backslash in it (`C:\path`) used
+  to raise an error or be rewritten as a regex escape.
+- `move_note_tool` is all or nothing: it used to rewrite the links first and
+  move after, so a failed move left links pointing to a missing note. It now
+  also rewrites folder-qualified links (`[[Folder/note]]`) and skips notes
+  whose links don't change.
+- Section edits accept the heading with its `#` marks (`## Ideas`).
 - Broken links: attachments and partial paths resolve by file name across
   the whole vault, `[[Foo.excalidraw]]` resolves to `Foo.excalidraw.md`, and
   links in fenced code (``` and ~~~), inline code, `%% comments %%` and

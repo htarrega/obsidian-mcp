@@ -202,10 +202,11 @@ application. On first install the service is not started while
   `DENY_READ_PATHS`, `REQUIRE_WRITE_PRECONDITIONS` and
   `MAX_ATTACHMENT_BYTES`.
 - **High-impact tools off**: `ENABLE_DELETE`, `ALLOW_PERMANENT_DELETE`,
-  `ENABLE_MOVE`, `ENABLE_FOLDER_RENAME` and `ENABLE_BULK_REPLACE` are `false`.
-  A disabled tool is not registered.
+  `ENABLE_FOLDER_RENAME` and `ENABLE_BULK_REPLACE` are `false`. A disabled
+  tool is not registered. `ENABLE_MOVE` is `true`: moving old notes aside
+  replaces deleting them.
 - **Exposure filters**: `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` unregister every
-  tool outside the production set (23 skill-style tools for the Mentat vault),
+  tool outside the production set (27 skill-style tools for the Mentat vault),
   and `ENABLE_PROMPTS` / `ENABLE_RESOURCES` are `false`. Vault conventions come
   from `CONVENTIONS_PATH` (`(000) System/_AI_INSTRUCTIONS.md`), which is
   write-denied.

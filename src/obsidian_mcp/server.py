@@ -20,6 +20,7 @@ from fastmcp.server.auth.providers.github import GitHubProvider
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools.base import ToolResult
+from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -121,6 +122,8 @@ from .tools.templates import create_from_template, list_templates_info
 from .tools.vault_layout import vault_conventions
 from .tools.write import (
     append_to_note,
+    batch_edit,
+    copy_note,
     delete_note,
     find_replace_in_vault,
     manage_tags,
@@ -137,6 +140,16 @@ from .tools.write import (
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+# Explicit hints for the note-editing tools. Without them clients assume the
+# spec defaults (destructive and open-world) for every tool.
+_EDIT = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False
+)
+_CREATE_ONLY = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False
+)
 
 
 def _mutation_boundary(function):
@@ -830,7 +843,7 @@ def write_note_tool(
     return _write_envelope(result)
 
 
-@mcp.tool()
+@mcp.tool(title="Edit note section", annotations=_EDIT)
 @_mutation_boundary
 def patch_note_tool(
     path: str,
@@ -842,11 +855,15 @@ def patch_note_tool(
     expected_revision: str | None = None,
     vault: str | None = None,
 ) -> dict:
-    """Edit a section or block reference inside a note.
-    mode: 'replace' (default) | 'insert_before' | 'insert_after' | 'append'.
-    target_type: 'heading' (default) | 'block_ref' (use section='^block-id').
-    dry_run=True previews data {preview, diff} without writing — check it,
-    then call again with dry_run=False."""
+    """Edit one section of a note, addressed by its heading instead of exact
+    text. section: the heading text, exact and case-sensitive ('Ideas' or
+    '## Ideas'); the section runs to the next heading of the same or higher
+    level. Fails if the heading is missing.
+    mode: 'replace' (default, keeps the heading) | 'insert_before' |
+    'insert_after' (right under the heading) | 'append' (end of the section).
+    target_type: 'heading' (default) | 'block_ref' (section='^block-id').
+    expected_revision pins the write to a read. dry_run=True previews
+    data {preview, diff} without writing."""
     result = patch_note(
         path,
         section,
@@ -1182,16 +1199,62 @@ def manage_tags_tool(
     return _write_envelope(result)
 
 
-def move_note_tool(from_path: str, to_path: str, vault: str | None = None) -> dict:
-    """Rename or move a note. Automatically rewrites all wikilinks in the vault
-    that reference the old path. Returns {from, to, updated_links_in}."""
-    result = move_note(from_path, to_path, index=_index)
-    log_write("move_note_tool", to_path, f"moved from {from_path}")
-    return _write_envelope(result, path_key="to", action="moved")
+@_mutation_boundary
+def move_note_tool(
+    from_path: str, to_path: str, dry_run: bool = False, vault: str | None = None
+) -> dict:
+    """Move or rename a note and rewrite every [[wikilink]]/embed pointing to
+    it (bare name, folder path, with #heading or |alias). All or nothing.
+    Never overwrites. Linking notes are rewritten under a lock but not pinned
+    to an expected_revision. data.updated_links_in lists them; dry_run=True
+    returns data.links [{path, count}] without changing anything."""
+    result = move_note(from_path, to_path, index=_index, dry_run=dry_run)
+    if result.get("status") == "dry_run":
+        return _write_envelope(result, path_key="to")
+    log_write("move_note_tool", result["to"], f"moved from {result['from']}")
+    return _write_envelope(result, path_key="to")
 
 
 if _feature_flags.enable_move:
-    mcp.tool()(move_note_tool)
+    mcp.tool(title="Move or rename note", annotations=_EDIT)(move_note_tool)
+
+
+@mcp.tool(title="Copy note", annotations=_CREATE_ONLY)
+@_mutation_boundary
+def copy_note_tool(
+    from_path: str, to_path: str, dry_run: bool = False, vault: str | None = None
+) -> dict:
+    """Copy a note to a new path on the server (exact bytes, nothing re-sent).
+    Never overwrites. Links are not changed. data.name_conflicts lists notes
+    sharing the new file name ([[name]] links to it would be ambiguous)."""
+    result = copy_note(from_path, to_path, index=_index, dry_run=dry_run)
+    if result.get("status") != "dry_run":
+        log_write("copy_note_tool", result["path"], f"copied from {result['from']}")
+    return _write_envelope(result)
+
+
+@mcp.tool(title="Batch edit notes", annotations=_EDIT)
+@_mutation_boundary
+def batch_edit_tool(edits: list[dict], dry_run: bool = False, vault: str | None = None) -> dict:
+    """Several edits on one or more notes, all or nothing (max 50). Edits run
+    in order and build on each other; if any fails, nothing is written.
+    Each edit: {"path", "op", ...} with op:
+      "replace"  find, replace, mode 'exact'|'regex', count (default 1, 0=all)
+      "section"  section (heading text), new_content, mode
+                 'replace'|'insert_before'|'insert_after'|'append',
+                 target_type 'heading'|'block_ref' (as patch_note_tool)
+      "append"   content, optional section (heading); creates a missing note
+      "prepend"  content (after frontmatter and a leading H1); creates if missing
+      "write"    content (whole note; creates or overwrites)
+    Optional per edit: expected_revision, to pin that note to a read.
+    An error names the failing edit (edits[i]) and means nothing was written.
+    data.notes: [{path, created, diff, revision}] (diffs over 4000 chars are
+    cut, diff_truncated=true); data.unchanged; dry_run=True previews."""
+    result = batch_edit(edits, index=_index, dry_run=dry_run)
+    if result["status"] != "dry_run":
+        for note in result["notes"]:
+            log_write("batch_edit_tool", note["path"], f"batch of {result['edits']} edit(s)")
+    return _write_envelope(result, path_key="_none")
 
 
 # ── Query / Graph ─────────────────────────────────────────────────────────────
