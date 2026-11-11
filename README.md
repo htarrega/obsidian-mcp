@@ -2,101 +2,74 @@
 
 [![CI](https://github.com/htarrega/obsidian-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/htarrega/obsidian-mcp/actions/workflows/ci.yml)
 
-An MCP (Model Context Protocol) server for [Obsidian](https://obsidian.md) vaults. Connects Claude (or any MCP client) directly to your vault — read, write, search, navigate links, and manage notes, canvases, and kanban boards.
+An MCP (Model Context Protocol) server for [Obsidian](https://obsidian.md)
+vaults, written in Python on [FastMCP](https://gofastmcp.com). It connects
+Claude (or any MCP client) directly to a vault on disk: read, search, write,
+edit, move and copy notes, navigate links, and work with canvases, Excalidraw
+drawings, kanban boards and bases.
 
 ## Why obsidian-mcp?
 
-The official Obsidian MCP plugin requires the Obsidian desktop app to be running and only works on the same machine. **obsidian-mcp is a standalone server** — no Obsidian app needed.
+The official Obsidian MCP plugin needs the Obsidian desktop app running on
+the same machine. **obsidian-mcp is a standalone server**: no Obsidian app
+needed. Host it next to a copy of your vault that is kept in sync (by
+[Syncthing](https://syncthing.net), [git](https://github.com/denolehov/obsidian-git),
+[rclone](https://rclone.org), [Obsidian Sync](https://obsidian.md/sync), or the
+built-in [Obsidian Headless supervisor](#ob-cli-wrapper-obsidian-headless-sync))
+and connect to it over the network:
 
-The intended setup is to host obsidian-mcp on a server or NAS where your vault is continuously synced (via [Syncthing](https://syncthing.net), [git](https://github.com/denolehov/obsidian-git), [rclone](https://rclone.org), or [Obsidian Sync](https://obsidian.md/sync)). Claude then connects to that server over the network, so:
-
-- **Always up to date** — the server sees every change your Obsidian app writes, immediately
-- **Access from anywhere** — connect from Claude Desktop, Claude Code, or any MCP client on any machine, without the vault being present locally
-- **Multiple clients** — several Claude sessions can read the vault simultaneously; writes are serialized with per-file locking
-- **No app dependency** — the server runs headless and starts automatically (systemd, Docker, etc.)
+- **Always up to date**: a file watcher picks up every change your Obsidian apps sync in
+- **Access from anywhere**: Claude Desktop, Claude Code, claude.ai (web/mobile) or any MCP client, without the vault being present locally
+- **Multiple clients**: concurrent sessions; writes are serialized with per-file locks and optimistic revisions
+- **No app dependency**: runs headless under systemd or Docker
 
 ```
 [Obsidian app]  ──sync──►  [vault on server]  ◄──MCP──  [Claude on any machine]
-  (phone/laptop)              (NAS / VPS)                  (Claude Desktop / Code)
+  (phone/laptop)              (NAS / VPS)                  (Desktop / Code / claude.ai)
 ```
 
 ## Features
 
-- **Read & Search** — read notes, search full-text (exact/regex/fuzzy, optionally combined with a frontmatter filter or scoped to filenames), render embedded transclusions, inspect note outlines, list every file in the vault regardless of type
-- **Duplicate prevention** — `find_similar_notes_tool` ranks notes by TF-IDF similarity so a new note doesn't duplicate an existing one under different wording
-- **Schema linting** — `lint_schema_tool` validates frontmatter against the enums declared in your own `_AI_INSTRUCTIONS.md`, plus an optional cron-friendly health-check script
-- **Write** — create/overwrite notes (with automatic frontmatter preservation, dry-run previews, and unified diffs), patch sections or anchor-less body text, append or prepend content, check off a single task line safely, update frontmatter (single or batch), manage tags, move notes with automatic wikilink rewriting
-- **Optimistic concurrency** — every read returns a revision; pass it back to a write to detect edits landed by Obsidian Sync in between
-- **Folders** — list (optionally recursive with a full tree dump), create, delete, rename folders; renaming rewrites path-based wikilinks vault-wide
-- **Query & Graph** — backlinks and outgoing links (notes addressable by bare name, like a wikilink), heading outlines, recently modified notes, broken links resolved with Obsidian's rules (attachments by file name, kind + suggested fix), orphan detection, BFS link graph, vault stats, paged task collection with dedupe for repeated worklog tasks
-- **Dataview-like queries** — filter notes by tags, status, frontmatter fields (exact match or `$ne`/`$in`/`$nin`/`$exists` operators), or inline fields (`key:: value`)
-- **Audit log** — every write-tool call is recorded; `get_audit_log_tool` queries it
-- **Periodic Notes** — read/preview daily, weekly, monthly, quarterly, yearly journal notes from templates
-- **Canvas / Excalidraw / Kanban / Bases** *(each opt-in via its own `ENABLE_*` flag)* — read, create, and patch these Obsidian plugin formats
-- **Attachments** — list, read (text or base64), and add binary files
-- **Two auth variants** — a static API key (Claude Code, Desktop, curl) and, optionally, GitHub OAuth (claude.ai Web/Mobile Custom Connector) — usable independently or at the same time
-- **Multi-vault** *(opt-in)* — serve several fully isolated vaults from one deployment, each identity mapped to only the vault(s) it may access
-- **Templates** — render Obsidian templates with built-in (`{{date}}`, `{{title}}`, …) and custom variables
-- **MCP Resources & Prompts** — vault notes/stats/tags as MCP resources; `weekly_review`/`daily_note` prompts
-- **Trimmable surface** — `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` expose only the tools a workflow needs; `ENABLE_PROMPTS` / `ENABLE_RESOURCES` switch the generic prompts and resources off
+- **Read and search**: notes by path or bare name (resolved like a `[[wikilink]]`), outlines, rendered transclusions, full-text search (exact/regex/fuzzy; exact and fuzzy ignore case and accents), TF-IDF similar notes to avoid duplicates
+- **Write and edit**: create/overwrite with frontmatter preservation, edit a section by heading (`patch_note`) or by anchor-less text, append/prepend, toggle one task line, frontmatter and tags, `dry_run` previews with unified diffs
+- **Batch edits**: `batch_edit` applies up to 50 edits over one or more notes in order, all or nothing
+- **Move and copy**: `copy_note` (create-only) and `move_note`, which is all or nothing, has `dry_run`, rewrites wikilinks *and* Markdown links/embeds keeping each link's style, and refuses names that would make links ambiguous
+- **Delete**: to `.trash/` or permanently, chosen by `DELETE_MODE` (opt-in group, see below)
+- **Query and graph**: Dataview-like frontmatter/tag/inline-field queries, backlinks, outgoing links, broken links resolved with Obsidian's rules, orphans, link graph, vault stats, paged task collection
+- **Plugin formats** *(opt-in)*: Canvas, Excalidraw, Kanban, Bases
+- **Also**: attachments, templates, periodic notes, frontmatter schema linting, an audit log of every write, MCP resources and prompts, multi-vault with per-identity isolation
+- **MCP tool annotations**: every tool declares `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint=false`, so clients can tell safe calls from destructive ones
 
-One JSON response shape across every tool — see [Response Envelope](docs/response-envelope.md).
+Every tool returns the same JSON envelope (see
+[Response Envelope](docs/response-envelope.md)). The full list, with the flag
+each tool needs, is in the **[Tool Reference](docs/tools.md)**.
 
-## Installation
-
-**Via uvx (no clone needed):**
-```bash
-VAULT_PATH=/your/vault uvx obsidian-remote-mcp
-```
-
-**Via Docker (no Python needed):**
-```bash
-docker compose up -d   # see docker-compose.yml
-```
+## Quick start
 
 **From source:**
 ```bash
 git clone https://github.com/htarrega/obsidian-mcp.git
 cd obsidian-mcp
 uv sync
-uv run obsidian-remote-mcp
+VAULT_PATH=/path/to/your/vault uv run obsidian-remote-mcp
 ```
 
-## Quick configuration
-
-Copy `.env.example` to `.env` and set your vault path:
-
-```env
-VAULT_PATH=/path/to/your/obsidian/vault
+**Straight from git with uvx** (the package is not published to PyPI):
+```bash
+VAULT_PATH=/path/to/your/vault uvx --from git+https://github.com/htarrega/obsidian-mcp obsidian-remote-mcp
 ```
 
-That's enough for local `stdio` use. `TAGS_SOURCE=frontmatter|inline|both`
-(default `both`) picks where tags are read from — see
-[Configuration → Tags](docs/configuration.md#tags). For network transports, path
-restrictions, optional plugin-format tools, and every other variable, see
-**[Configuration](docs/configuration.md)**. To show a model only part of the
-tool set, list the tools in `TOOLS_ALLOWLIST` (see
-[Configuration → Exposed tool surface](docs/configuration.md#exposed-tool-surface)
-and the annotated example in `deploy/env.example`).
+**With Docker:** the image `ghcr.io/htarrega/obsidian-mcp` is built for
+`linux/amd64` and `linux/arm64` on every `v*` tag; `docker-compose.yml` uses
+it (or swap `image:` for `build: .`). See
+[Docker & Deployment](docs/deployment.md).
 
-Security settings (all optional, hardened defaults; details in
-[Configuration → Security hardening](docs/configuration.md#security-hardening)):
+```bash
+cp .env.example .env   # set HOST_VAULT_PATH, API_KEY, ...
+docker compose up -d
+```
 
-| Variable | Default |
-|---|---|
-| `MASK_ERROR_DETAILS` | `true` |
-| `REGEX_MAX_LENGTH` | `500` |
-| `REGEX_TIMEOUT_SECONDS` | `2` |
-| `REGEX_MAX_REPEAT` | `100` |
-| `OAUTH_GITHUB_SCOPES` | `read:user` |
-| `OAUTH_ALLOWED_CLIENT_REDIRECT_URIS` | claude.ai / claude.com MCP callbacks, `http://localhost:*`, `http://127.0.0.1:*` |
-| `OAUTH_ENABLE_CIMD` | `false` |
-| `OAUTH_ACCESS_TOKEN_EXPIRY_SECONDS` | `2592000` (30 days) |
-| `OAUTH_REFRESH_TOKEN_EXPIRY_SECONDS` | `7776000` (90 days) |
-
-## Usage with Claude Code / Desktop
-
-Add to your MCP config (`~/.claude/mcp.json` or `claude_desktop_config.json`):
+### Claude Code / Claude Desktop (stdio)
 
 ```json
 {
@@ -112,22 +85,71 @@ Add to your MCP config (`~/.claude/mcp.json` or `claude_desktop_config.json`):
 }
 ```
 
+For HTTP transport with an API key or GitHub OAuth (claude.ai Custom
+Connector), see [Remote Setup](docs/remote-setup.md).
+
+## Configuration highlights
+
+`VAULT_PATH` is the only required setting; copy `.env.example` to `.env` for
+the rest. Every variable is documented in
+**[Configuration](docs/configuration.md)**. The ones that shape what a model
+can do:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `READ_ONLY` | `false` (`true` in `docker-compose.yml`) | Refuse every write |
+| `READ_PATHS` / `WRITE_PATHS` / `DENY_READ_PATHS` / `DENY_WRITE_PATHS` | see docs | [Path policy](docs/configuration.md#path-policy) |
+| `REQUIRE_WRITE_PRECONDITIONS` | `false` (`true` in Compose) | Overwrites need the `revision` from a prior read |
+| `ENABLE_MOVE`, `ENABLE_FOLDER_RENAME`, `ENABLE_BULK_REPLACE`, `ENABLE_DELETE` | `false` | [Optional tool groups](docs/configuration.md#optional-tool-groups); disabled tools are never registered |
+| `ENABLE_CANVAS`, `ENABLE_EXCALIDRAW`, `ENABLE_KANBAN`, `ENABLE_BASES` | `false` | Plugin-format tool groups |
+| `DELETE_MODE` | `trash` | What `delete_tool` does when the caller omits `trash`; `permanent` also needs `ALLOW_PERMANENT_DELETE=true` ([Deletion](docs/configuration.md#deletion)) |
+| `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` | empty | Trim the [exposed tool surface](docs/configuration.md#exposed-tool-surface) to what a workflow needs |
+| `ENABLE_PROMPTS` / `ENABLE_RESOURCES` | `true` | Drop the generic prompts / `vault://` resources |
+| `TAGS_SOURCE` | `both` | Read tags from `frontmatter`, `inline` or `both` |
+| `ENABLE_OB`, `ENABLE_OB_OPS`, `ENABLE_OB_ADMIN` | `false` | [Obsidian Headless sync](#ob-cli-wrapper-obsidian-headless-sync) tiers |
+
+## Security model
+
+- **Authentication**: a static API key and/or GitHub OAuth for HTTP transports ([Remote Setup](docs/remote-setup.md)); multi-vault maps each identity to only the vaults it may access ([Multi-Vault](docs/multi-vault.md))
+- **Path policy**: every read and write is checked against rooted allow/deny scopes; `.obsidian/` and `.trash/` are denied by default in Compose
+- **Least surface**: destructive groups (delete, move, folder rename, bulk replace) are opt-in and unregistered when off; the allowlist hides anything else
+- **Safe writes**: per-file locks, optimistic `revision` checks, `dry_run` previews, all-or-nothing `batch_edit` and `move_note`, and an audit log of every write
+- **Hardened defaults**: masked error details and bounded regex length, repetition and run time ([Security hardening](docs/configuration.md#security-hardening))
+- **`ob` isolation**: the sync child gets a minimal environment, never a shell, and all its output is redacted (see below)
+
+## Deployment
+
+- [Docker & Deployment](docs/deployment.md): Compose, the hardened home-server profile, health checks, the schema-lint cron
+- [deploy/README.md](deploy/README.md): production deployment on an Oracle Cloud VM with Caddy (TLS), systemd, Obsidian Headless and GitHub OAuth; `deploy/env.example` is the annotated production environment
+- [Deployment architecture](docs/deployment-architecture.md): system diagrams (trust boundaries, OAuth, service internals, feedback loops)
+
 ## Documentation
 
 | Topic | |
 |---|---|
-| **[Configuration](docs/configuration.md)** | Every env var: path policy, write preconditions, deletion, indexing/sync, optional tool groups, transport |
+| **[Configuration](docs/configuration.md)** | Every environment variable |
 | **[Tool Reference](docs/tools.md)** | Every MCP tool, grouped, with the opt-in flags each needs |
 | **[Response Envelope](docs/response-envelope.md)** | The `{success, path, revision, data, meta}` shape every tool returns |
-| **[Remote Setup](docs/remote-setup.md)** | Running over the network: API key auth and GitHub OAuth for claude.ai |
+| **[Remote Setup](docs/remote-setup.md)** | API key auth and GitHub OAuth for claude.ai |
 | **[Multi-Vault Setup](docs/multi-vault.md)** | Serving several isolated vaults from one deployment |
-| **[Docker & Deployment](docs/deployment.md)** | Compose, the hardened home-server profile, health checks, the schema-lint cron |
 | **[Vault Conventions](docs/vault-conventions.md)** | Teaching the AI your vault's structure via `_AI_INSTRUCTIONS.md` |
-| **[Architecture](docs/architecture.md)** | Source layout and the authorization/concurrency layers underneath the tools |
-| **[Deployment architecture](docs/deployment-architecture.md)** | System diagrams (top-down): trust boundaries, flows, feedback loops, OAuth, `ob` and the Oracle Cloud deployment |
-| **[Development](docs/development.md)** | Running tests, linting, and the local HTTP smoke test |
+| **[Architecture](docs/architecture.md)** | Source layout and the authorization/concurrency layers |
+| **[Development](docs/development.md)** | Tests, linting and the local HTTP smoke test |
+| **[Changelog](CHANGELOG.md)** | What changed |
 
-## ob CLI wrapper
+## Development
+
+```bash
+uv sync --dev
+uv run pytest -q
+uv run ruff check src/ tests/
+uv run python scripts/run_local_smoke_test.py   # real server + MCP client over HTTP
+```
+
+CI (`.github/workflows/ci.yml`) runs ruff and pytest on every push and pull
+request to `main`; `release.yml` publishes the Docker image on `v*` tags.
+
+## ob CLI wrapper (Obsidian Headless sync)
 
 Optional, off by default. With `ENABLE_OB=true` the server supervises
 [Obsidian Headless](https://www.npmjs.com/package/obsidian-headless) (`npm i -g
@@ -177,22 +199,15 @@ tool is registered and no process is started.
   `ob sync-config --path V <flag> <value> --json` → restart child* (the child
   is restarted even if the config command fails).
 
-### Environment variables
+### Configuration
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `ENABLE_OB` | `false` | Master switch: supervisor + read-only tools |
-| `ENABLE_OB_OPS` | `false` | Adds the ops tier (`sync_restart`) |
-| `ENABLE_OB_ADMIN` | `false` | Adds the admin tier (`sync_set_*`); ignored when `READ_ONLY=true` |
-| `OB_BIN` | `ob` | Path or name of the `ob` executable |
-| `OB_VAULT_PATH` | `VAULT_PATH` | Vault to sync. **Required** with multi-vault (`VAULTS_CONFIG`): startup fails with a clear error instead of guessing |
-| `OB_LOG_LINES` | `1000` | Ring-buffer size (max lines `sync_logs` returns) |
-| `OB_COMMAND_TIMEOUT` | `60` | Seconds before a one-shot `ob` command is killed |
-| `OB_RESTART_BACKOFF_MAX` | `300` | Maximum seconds between restarts of a crashing sync child |
-| `OB_RESTART_COOLDOWN` | `60` | `sync_restart` is refused (tool error) if the child was (re)started less than this many seconds ago; `0` disables it |
-
-`READ_ONLY=true` disables only the admin tier; the ops tier depends only on
-`ENABLE_OB_OPS`.
+`ENABLE_OB` (supervisor + read-only tools), `ENABLE_OB_OPS` (adds
+`sync_restart`) and `ENABLE_OB_ADMIN` (adds the persistent `sync_set_*` tools;
+ignored when `READ_ONLY=true`) all default to `false`. `OB_VAULT_PATH`
+defaults to `VAULT_PATH` and is required with multi-vault (`VAULTS_CONFIG`).
+`OB_BIN`, `OB_LOG_LINES`, `OB_COMMAND_TIMEOUT`, `OB_RESTART_BACKOFF_MAX` and
+`OB_RESTART_COOLDOWN` are documented in
+[Configuration → Obsidian Headless sync](docs/configuration.md#obsidian-headless-sync-ob).
 
 ### Tools
 
@@ -230,6 +245,9 @@ tool is registered and no process is started.
 - If the server process is SIGKILLed the child cannot be cleaned up; `ob`
   reclaims its stale lock after 5s on the next start.
 
-## License
+## Origin and license
 
-MIT
+This project started as a fork of
+[ykoellmann/obsidian-mcp](https://github.com/ykoellmann/obsidian-mcp) by
+Yannik Koellmann and is now developed independently. Many thanks to the
+original author. Released under the [MIT License](LICENSE).
