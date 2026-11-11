@@ -42,5 +42,8 @@ Breaking change, so bundle it with a major bump.
       listing tool with parameters.
 - [ ] `append_to_note_tool` / `prepend_to_note_tool` into one tool with a
       `position` parameter.
+- [ ] Drop the redundant `_tool` suffix from every tool name
+      (`read_note_tool` -> `read_note`), including the names in
+      `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` and the `core` profile.
 - [ ] Update `_TOOL_ANNOTATIONS`, `docs/tools.md`, the server instructions
       and `CHANGELOG.md`.
