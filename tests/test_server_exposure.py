@@ -72,6 +72,9 @@ DEFAULT_TOOLS = frozenset({
     "get_recent_notes_tool",
     "prepend_to_note_tool",
     "set_task_status_tool",
+    # Copy and all-or-nothing batch edits.
+    "batch_edit_tool",
+    "copy_note_tool",
 })
 
 
@@ -233,6 +236,7 @@ async def test_deploy_allowlist_names_only_real_tools(monkeypatch):
         monkeypatch,
         ENABLE_OB=deploy["ENABLE_OB"],
         ENABLE_OB_OPS=deploy["ENABLE_OB_OPS"],
+        ENABLE_MOVE=deploy["ENABLE_MOVE"],
         TOOLS_ALLOWLIST=deploy["TOOLS_ALLOWLIST"],
         ENABLE_PROMPTS=deploy["ENABLE_PROMPTS"],
         ENABLE_RESOURCES=deploy["ENABLE_RESOURCES"],
@@ -241,5 +245,5 @@ async def test_deploy_allowlist_names_only_real_tools(monkeypatch):
 
     assert server._exposure["unknown_allowlist"] == []
     assert tools == set(deploy["TOOLS_ALLOWLIST"].split(","))
-    assert 18 <= len(tools) <= 24
+    assert 18 <= len(tools) <= 28
     assert prompts == set() and resources == set()

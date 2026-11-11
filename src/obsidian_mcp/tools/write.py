@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -22,6 +24,8 @@ from ..storage.policy import ReadPermissionError, WritePermissionError
 from ..storage.revisions import read_text_for_update, revision_result
 from .read import _is_excluded
 from .safe_regex import compile_user_regex
+
+logger = logging.getLogger(__name__)
 
 
 def _storage() -> VaultStorage:
@@ -50,6 +54,70 @@ def _unified_diff(before: str, after: str, path: str) -> str:
             tofile=f"b/{path}",
         )
     )
+
+
+def _replacement(find: str, replace: str, mode: str):
+    """Compile ``find`` and return ``(pattern, repl)`` for ``pattern.subn``.
+
+    In 'exact' mode the replacement is literal: a plain string would be read
+    as a regex template, so a backslash in it (``C:\\path``) would fail or be
+    rewritten. In 'regex' mode ``\\1``/``\\g<name>`` keep working.
+    """
+    if mode == "regex":
+        return compile_user_regex(find), replace
+    if mode == "exact":
+        return re.compile(re.escape(find)), lambda _match: replace
+    raise ValueError(f"Unknown mode: {mode!r} (use 'exact' or 'regex')")
+
+
+@dataclass
+class _PlannedWrite:
+    path: str
+    before: str | None  # None: the note does not exist yet
+    after: str
+    revision: str | None  # token read under the lock; None for a new note
+
+
+def _commit_writes(storage: VaultStorage, planned: list[_PlannedWrite]) -> dict:
+    """Write every planned note or none of them.
+
+    Callers hold the locks and pass revisions read under them, so another
+    writer (Sync, Obsidian) is detected as a revision conflict. If a write
+    fails, the notes already written get their previous text back and notes
+    this call created are moved to .trash (deleted outright only when
+    permanent deletion is allowed), then the error is re-raised.
+    Returns {path: FileRevision}.
+    """
+    committed: list[tuple[_PlannedWrite, object]] = []
+    try:
+        for write in planned:
+            revision = storage.write_text_atomic(
+                write.path,
+                write.after,
+                expected_revision=write.revision,
+                create_only=write.before is None,
+            )
+            committed.append((write, revision))
+    except BaseException:
+        _rollback_writes(storage, committed)
+        raise
+    return {write.path: revision for write, revision in committed}
+
+
+def _rollback_writes(storage: VaultStorage, committed: list) -> None:
+    for write, revision in reversed(committed):
+        try:
+            if write.before is None:
+                if storage.policy.allow_permanent_delete:
+                    storage.delete(write.path)
+                else:
+                    storage.trash(write.path)
+            else:
+                storage.write_text_atomic(
+                    write.path, write.before, expected_revision=revision.token
+                )
+        except Exception:  # keep undoing the rest; the original error wins
+            logger.exception("Rollback failed for %s", write.path)
 
 
 def write_note(
@@ -198,8 +266,11 @@ def patch_note(
 
 
 def _find_section_bounds(content: str, heading: str) -> tuple[int, int, int, int]:
-    """Return (heading_start, heading_end, body_end, level) for a heading."""
-    escaped = re.escape(heading)
+    """Return (heading_start, heading_end, body_end, level) for a heading.
+
+    ``heading`` is the heading text; a leading ``## `` is tolerated.
+    """
+    escaped = re.escape(re.sub(r"^#{1,6}\s+", "", heading.strip()))
     m = re.search(r"^(#{1,6})\s+" + escaped + r"[ \t]*$", content, re.MULTILINE)
     if not m:
         raise ValueError(f"Section {heading!r} not found in note")
@@ -369,6 +440,14 @@ def _prepend_offset(raw: str) -> int:
     return offset
 
 
+def _prepend_text(raw: str, content: str) -> str:
+    block = content if content.endswith("\n") else content + "\n"
+    offset = _prepend_offset(raw)
+    if offset and not raw[:offset].endswith("\n"):
+        block = "\n" + block  # an H1 on the last line without a newline
+    return raw[:offset] + block + raw[offset:]
+
+
 def prepend_to_note(
     path: str,
     content: str,
@@ -391,10 +470,7 @@ def prepend_to_note(
         storage = _storage()
         if storage.exists(path, read=True):
             raw, current_revision = read_text_for_update(storage, path, expected_revision)
-            offset = _prepend_offset(raw)
-            if offset and not raw[:offset].endswith("\n"):
-                block = "\n" + block  # an H1 on the last line without a newline
-            patched = raw[:offset] + block + raw[offset:]
+            patched = _prepend_text(raw, content)
         elif create:
             if expected_revision is not None:
                 raise RevisionConflictError(path, expected_revision, None)
@@ -715,67 +791,134 @@ def _apply_frontmatter_updates(raw: str, updates: dict, merge_arrays: bool) -> s
     return _serialize_frontmatter(fm, body)
 
 
-def move_note(from_path: str, to_path: str, index: VaultIndex | None = None) -> dict:
-    cfg = get_config()
-    if not from_path.lower().endswith(".md") or not to_path.lower().endswith(".md"):
-        raise ValueError("Note paths must end in .md")
-    source = _storage().resolve_delete(from_path)
-    destination = _storage().resolve_write(to_path)
-    from_path, to_path = source.relative, destination.relative
-    storage = _storage()
+def _link_pattern(from_path: str) -> re.Pattern:
+    """Wikilinks/embeds to a note: [[stem]], [[stem.md]], [[Folder/stem]],
+    [[Folder/stem.md]], each optionally with #heading, ^block or |alias
+    (also the table-escaped \\|alias)."""
+    path = from_path.replace("\\", "/")
+    stem = Path(path).stem
+    names = {stem, stem + ".md", path, path[:-3]}
+    targets = sorted((re.escape(name) for name in names), key=len, reverse=True)
+    return re.compile(
+        rf"\[\[({'|'.join(targets)})((?:\\?[|#][^\]]*)?)\]\]", re.IGNORECASE
+    )
 
+
+def _same_name_notes(storage: VaultStorage, stem: str, *, exclude: str = "") -> list[str]:
+    """Other notes whose file name is ``stem`` (case-insensitive)."""
+    wanted = stem.casefold()
+    return sorted(
+        candidate.relative
+        for candidate in storage.list_files()
+        if candidate.relative.lower().endswith(".md")
+        and candidate.relative != exclude
+        and Path(candidate.relative).stem.casefold() == wanted
+    )
+
+
+def move_note(
+    from_path: str,
+    to_path: str,
+    index: VaultIndex | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Move or rename a note and rewrite the wikilinks that point to it.
+
+    All or nothing: the note is moved first, then the linking notes (and its
+    own self-links) are rewritten; if any of that fails, the rewrites are
+    undone and the note is moved back. dry_run=True lists the notes whose
+    links would change.
+
+    Refused when another note already uses the new name (every [[name]] link
+    in the vault would become ambiguous) or shares the old one (a bare
+    [[old]] link could mean either note, so rewriting it would hijack it).
+    """
+    cfg = get_config()
+    _require_note_path(from_path)
+    _require_note_path(to_path)
+    storage = _storage()
+    from_path = storage.resolve_delete(from_path).relative
+    to_path = storage.resolve_write(to_path).relative
+    if from_path == to_path:
+        raise ValueError("Source and destination are the same note")
     if not storage.exists(from_path, read=False):
         raise FileNotFoundError(f"Source note not found: {from_path!r}")
     if storage.exists(to_path, read=False):
         raise FileExistsError(f"Target already exists: {to_path!r}")
 
-    from_stem = Path(from_path).stem
-    to_stem = Path(to_path).stem
+    from_stem, to_stem = Path(from_path).stem, Path(to_path).stem
+    taken = _same_name_notes(storage, to_stem, exclude=from_path)
+    if taken:
+        raise FileExistsError(
+            f"Another note is already named {to_stem!r}: {', '.join(taken)}. "
+            "Pick a different name; note names must be unique for [[links]]."
+        )
+    twins = _same_name_notes(storage, from_stem, exclude=from_path)
+    if twins:
+        raise ValueError(
+            f"{from_stem!r} is also the name of {', '.join(twins)}, so [[{from_stem}]] "
+            "links are ambiguous and can't be rewritten safely. Rename the other note first."
+        )
 
-    # Patterns that refer to the source note in wikilinks
-    # Match [[from_stem]], [[from_path]], [[from_stem|Alias]], [[from_stem#Heading]]
-    _patterns = [
-        re.escape(from_stem),
-        re.escape(from_path.replace("\\", "/")),
-    ]
-    combined = "|".join(_patterns)
-    link_re = re.compile(rf"\[\[({combined})((?:[|#][^\]]*)?)\]\]", re.IGNORECASE)
+    link_re = _link_pattern(from_path)
 
-    updated_files: list[str] = []
-    all_md = [candidate for candidate in storage.list_files() if candidate.relative.lower().endswith(".md")]
+    def rewrite(raw: str) -> str:
+        return link_re.sub(lambda m: f"[[{to_stem}{m.group(2)}]]", raw)
 
-    # Collect and lock all files we'll touch
-    locks = []
-    files_to_rewrite: list[tuple[str, str]] = []
-
-    for candidate in all_md:
+    # Every note with a link to the source; the rewrite is a second mutation,
+    # so each one must be writable before anything moves.
+    linking: list[str] = []
+    link_counts: dict[str, int] = {}
+    for candidate in storage.list_files():
         rel = candidate.relative
-        if rel == from_path:
+        if not rel.lower().endswith(".md"):
             continue
         try:
-            raw = _storage().read_text(rel)
+            raw = storage.read_text(rel)
         except Exception:
             continue
-        if link_re.search(raw):
-            # Link rewriting is a second mutation. Preflight every affected
-            # path so a restricted move cannot partially mutate the vault
-            # before discovering an out-of-scope note.
-            _check_write_permission(rel)
-            files_to_rewrite.append((rel, raw))
+        found = len(link_re.findall(raw))
+        if found:
+            link_counts[rel] = found
+            if rel == from_path:
+                continue  # self-links: rewritten at the new path after the move
+            if rewrite(raw) != raw:
+                _check_write_permission(rel)
+                linking.append(rel)
 
+    if dry_run:
+        return {
+            "from": from_path,
+            "to": to_path,
+            "status": "dry_run",
+            "links": [{"path": rel, "count": n} for rel, n in sorted(link_counts.items())],
+            "updated_links_in": sorted(linking),
+        }
+
+    locks = []
     try:
-        for rel, _ in files_to_rewrite:
+        for rel in sorted({*linking, from_path, to_path}):
             locks.append(acquire_lock(rel, lock_path=cfg.lock_path))
-        locks.append(acquire_lock(from_path, lock_path=cfg.lock_path))
+        planned = []
+        for rel in linking:
+            raw, revision = storage.read_text_with_revision(rel)
+            after = rewrite(raw)
+            if after != raw:
+                planned.append(_PlannedWrite(rel, raw, after, revision.token))
 
-        # Rewrite links
-        for rel, raw in files_to_rewrite:
-            rewritten = link_re.sub(lambda m: f"[[{to_stem}{m.group(2)}]]", raw)
-            storage.write_text_atomic(rel, rewritten)
-            updated_files.append(rel)
-
-        # Move the file through the same policy gateway.
-        _storage().move(from_path, to_path)
+        storage.move(from_path, to_path)
+        try:
+            if from_path in link_counts:
+                raw, revision = storage.read_text_with_revision(to_path)
+                if rewrite(raw) != raw:
+                    planned.append(_PlannedWrite(to_path, raw, rewrite(raw), revision.token))
+            _commit_writes(storage, planned)
+        except BaseException:
+            try:
+                storage.move(to_path, from_path)
+            except Exception:
+                logger.exception("Could not move %s back to %s", to_path, from_path)
+            raise
     finally:
         for lock in reversed(locks):
             lock.release()
@@ -783,10 +926,257 @@ def move_note(from_path: str, to_path: str, index: VaultIndex | None = None) -> 
     if index is not None:
         index.remove(from_path)
         index.update(to_path)
-        for rel in updated_files:
+        for write in planned:
+            index.update(write.path)
+
+    return {
+        "from": from_path,
+        "to": to_path,
+        "status": "moved",
+        "updated_links_in": [write.path for write in planned if write.path != to_path],
+    }
+
+
+def copy_note(
+    from_path: str,
+    to_path: str,
+    index: VaultIndex | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Copy a note to a new path on the server, byte for byte.
+
+    Never overwrites. Links are not touched. data.name_conflicts lists other
+    notes with the same file name, which makes [[name]] links ambiguous.
+    """
+    _require_note_path(from_path)
+    _require_note_path(to_path)
+    storage = _storage()
+    from_path = storage.resolve_read(from_path).relative
+    to_path = storage.resolve_write(to_path).relative
+    if from_path == to_path:
+        raise ValueError("Source and destination are the same note")
+    if not storage.exists(from_path, read=True):
+        raise FileNotFoundError(f"Source note not found: {from_path!r}")
+    if storage.exists(to_path, read=False):
+        raise FileExistsError(f"Target already exists: {to_path!r}")
+
+    name_conflicts = _same_name_notes(storage, Path(to_path).stem)
+    content = storage.read_bytes(from_path)
+
+    if dry_run:
+        return {
+            "from": from_path,
+            "path": to_path,
+            "status": "dry_run",
+            "bytes": len(content),
+            "name_conflicts": name_conflicts,
+        }
+
+    lock = acquire_lock(to_path, lock_path=get_config().lock_path)
+    try:
+        revision = storage.write_bytes_atomic(to_path, content, create_only=True)
+    finally:
+        lock.release()
+
+    if index is not None:
+        index.update(to_path)
+
+    return revision_result(
+        {"from": from_path, "path": to_path, "status": "copied", "name_conflicts": name_conflicts},
+        revision,
+    )
+
+
+BATCH_MAX_EDITS = 50
+DIFF_MAX_CHARS = 4000  # per note in batch results; keeps responses small
+
+
+def _capped_diff(diff: str) -> dict:
+    if len(diff) <= DIFF_MAX_CHARS:
+        return {"diff": diff}
+    return {"diff": diff[:DIFF_MAX_CHARS], "diff_truncated": True}
+_BATCH_OPS = ("replace", "section", "append", "prepend", "write")
+
+
+def _field(edit: dict, name: str, *, required: bool = True, empty_ok: bool = False) -> str | None:
+    value = edit.get(name)
+    if value is None:
+        if required:
+            raise ValueError(f"missing {name!r}")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{name!r} must be a string")
+    if not value and not empty_ok:
+        raise ValueError(f"{name!r} must not be empty")
+    return value
+
+
+def _apply_edit(text: str | None, op: str, edit: dict) -> str:
+    """Apply one batch edit to a note's text (None: the note does not exist)."""
+    if op == "write":
+        content = _field(edit, "content", empty_ok=True)
+        if text and not _FM_RE.match(content):
+            existing_fm, _ = _parse_frontmatter(text)
+            if existing_fm:
+                content = _serialize_frontmatter(existing_fm, content)
+        return content
+    if op in ("append", "prepend") and text is None:
+        content = _field(edit, "content")
+        if edit.get("section"):
+            raise ValueError("note does not exist, so it has no section")
+        return content if content.endswith("\n") else content + "\n"
+    if text is None:
+        raise ValueError("note does not exist")
+    if op == "replace":
+        pattern, repl = _replacement(
+            _field(edit, "find"),
+            _field(edit, "replace", empty_ok=True),
+            edit.get("mode", "exact"),
+        )
+        count = edit.get("count", 1)
+        if not isinstance(count, int) or count < 0:
+            raise ValueError("'count' must be an integer >= 0 (0 = all)")
+        patched, n = pattern.subn(repl, text, count=count)
+        if n == 0:
+            raise ValueError(f"{edit['find']!r} not found")
+        return patched
+    if op == "section":
+        section = _field(edit, "section")
+        new_content = _field(edit, "new_content", empty_ok=True)
+        mode = edit.get("mode", "replace")
+        target_type = edit.get("target_type", "heading")
+        if target_type == "block_ref":
+            return _patch_block_ref(text, section.lstrip("^"), new_content, mode)
+        if target_type != "heading":
+            raise ValueError("'target_type' must be 'heading' or 'block_ref'")
+        return _patch_section(text, section, new_content, mode)
+    if op == "append":
+        content = _field(edit, "content")
+        section = _field(edit, "section", required=False)
+        if section:
+            return _patch_section(text, section, content, mode="append")
+        return text.rstrip("\n") + "\n\n" + content.strip() + "\n"
+    if op == "prepend":
+        return _prepend_text(text, _field(edit, "content"))
+    raise ValueError(f"unknown op {op!r} (use one of {', '.join(_BATCH_OPS)})")
+
+
+def batch_edit(
+    edits: list[dict],
+    index: VaultIndex | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Apply several edits to one or more notes, all or nothing.
+
+    Edits run in order; several edits on one note build on each other. Every
+    edit is checked against the current text before anything is written, and
+    if a write still fails the notes already written are restored.
+    """
+    if not isinstance(edits, list) or not edits:
+        raise ValueError("edits must be a non-empty list")
+    if len(edits) > BATCH_MAX_EDITS:
+        raise ValueError(f"Too many edits ({len(edits)}; the limit is {BATCH_MAX_EDITS})")
+    cfg = get_config()
+    storage = _storage()
+
+    order: list[str] = []
+    pinned: dict[str, str] = {}
+    steps: list[tuple[int, str, str, dict]] = []
+    for i, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            raise ValueError(f"edits[{i}] must be an object")
+        op = edit.get("op")
+        if op not in _BATCH_OPS:
+            raise ValueError(f"edits[{i}]: unknown op {op!r} (use one of {', '.join(_BATCH_OPS)})")
+        path = edit.get("path")
+        if not isinstance(path, str) or not path.lower().endswith(".md"):
+            raise ValueError(f"edits[{i}]: 'path' must be a note path ending in .md")
+        rel = storage.resolve_write(path).relative
+        if not storage.policy.can_read(rel):
+            raise ReadPermissionError(f"batch_edit needs read access to {rel!r}")
+        expected = edit.get("expected_revision")
+        if expected is not None:
+            expected = normalize_revision_token(expected)
+            if pinned.setdefault(rel, expected) != expected:
+                raise ValueError(f"edits[{i}]: conflicting expected_revision for {rel!r}")
+        if rel not in order:
+            order.append(rel)
+        steps.append((i, rel, op, edit))
+
+    locks = []
+    try:
+        for rel in sorted(order):
+            locks.append(acquire_lock(rel, lock_path=cfg.lock_path))
+        before: dict[str, str | None] = {}
+        revisions: dict[str, str | None] = {}
+        for rel in order:
+            if storage.exists(rel, read=True):
+                before[rel], revisions[rel] = read_text_for_update(storage, rel, pinned.get(rel))
+            elif rel in pinned:
+                raise RevisionConflictError(rel, pinned[rel], None)
+            else:
+                before[rel], revisions[rel] = None, None
+
+        current = dict(before)
+        for i, rel, op, edit in steps:
+            if (
+                op == "write"
+                and before[rel] is not None
+                and cfg.require_write_preconditions
+                and rel not in pinned
+            ):
+                raise PreconditionRequiredError(rel)
+            try:
+                current[rel] = _apply_edit(current[rel], op, edit)
+            except ValueError as exc:
+                raise ValueError(
+                    f"edits[{i}] ({op} on {rel!r}): {exc}; nothing was written"
+                ) from exc
+
+        changed = [rel for rel in order if current[rel] != before[rel]]
+        notes = {
+            rel: {
+                "path": rel,
+                "created": before[rel] is None,
+                **_capped_diff(_unified_diff(before[rel] or "", current[rel], rel)),
+            }
+            for rel in changed
+        }
+        unchanged = [rel for rel in order if rel not in notes]
+
+        if dry_run:
+            for rel in changed:
+                notes[rel]["revision"] = revisions[rel]
+            return {
+                "status": "dry_run",
+                "edits": len(edits),
+                "notes": list(notes.values()),
+                "unchanged": unchanged,
+            }
+
+        # Existing notes first, new notes last: a failure among the overwrites
+        # then needs no deletes to undo.
+        planned = sorted(
+            (_PlannedWrite(rel, before[rel], current[rel], revisions[rel]) for rel in changed),
+            key=lambda write: write.before is None,
+        )
+        committed = _commit_writes(storage, planned)
+    finally:
+        for lock in reversed(locks):
+            lock.release()
+
+    if index is not None:
+        for rel in changed:
             index.update(rel)
 
-    return {"from": from_path, "to": to_path, "updated_links_in": updated_files}
+    for rel, revision in committed.items():
+        notes[rel]["revision"] = revision.token
+    return {
+        "status": "applied",
+        "edits": len(edits),
+        "notes": list(notes.values()),
+        "unchanged": unchanged,
+    }
 
 
 def _is_writable(rel_path: str) -> bool:
@@ -842,15 +1232,13 @@ def patch_note_text(
     if not storage.exists(path, read=True):
         raise FileNotFoundError(f"Note not found: {path!r}")
 
-    pattern = (
-        compile_user_regex(find) if mode == "regex" else re.compile(re.escape(find))
-    )
+    pattern, repl = _replacement(find, replace, mode)
 
     lock = acquire_lock(path, lock_path=get_config().lock_path)
     try:
         raw, current_revision = read_text_for_update(storage, path, expected_revision)
         replace_count = count if count > 0 else 0
-        patched, n = pattern.subn(replace, raw, count=replace_count)
+        patched, n = pattern.subn(repl, raw, count=replace_count)
         if n == 0:
             raise ValueError(f"{find!r} not found in {path!r}")
         diff = _unified_diff(raw, patched, path)
@@ -898,9 +1286,7 @@ def find_replace_in_vault(
     cfg = get_config()
     storage = _storage()
 
-    pattern = (
-        compile_user_regex(search) if mode == "regex" else re.compile(re.escape(search))
-    )
+    pattern, repl = _replacement(search, replace, mode)
 
     candidates: list[tuple[str, str, int]] = []
     skipped_write_protected: list[str] = []
@@ -948,7 +1334,7 @@ def find_replace_in_vault(
         replaced_in: list[str] = []
         total = 0
         for rel, raw, count in candidates:
-            storage.write_text_atomic(rel, pattern.sub(replace, raw))
+            storage.write_text_atomic(rel, pattern.sub(repl, raw))
             replaced_in.append(rel)
             total += count
     finally:
