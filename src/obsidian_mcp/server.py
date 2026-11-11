@@ -1203,11 +1203,15 @@ def manage_tags_tool(
 def move_note_tool(
     from_path: str, to_path: str, dry_run: bool = False, vault: str | None = None
 ) -> dict:
-    """Move or rename a note and rewrite every [[wikilink]]/embed pointing to
-    it (bare name, folder path, with #heading or |alias). All or nothing.
+    """Move or rename a note and rewrite every link pointing to it: [[wikilinks]]
+    and Markdown [text](path) links/embeds, keeping each link's style (%20 or
+    <>, relative or full path, .md or not). The note's own relative links are
+    fixed for its new folder; code blocks are left alone. All or nothing.
     Never overwrites. Linking notes are rewritten under a lock but not pinned
     to an expected_revision. data.updated_links_in lists them; dry_run=True
-    returns data.links [{path, count}] without changing anything."""
+    returns data.links [{path, count, wikilinks, markdown}] without changing
+    anything. data.reference_links_not_updated lists notes whose "[ref]: path"
+    definitions point at the note (those are not rewritten)."""
     result = move_note(from_path, to_path, index=_index, dry_run=dry_run)
     if result.get("status") == "dry_run":
         return _write_envelope(result, path_key="to")

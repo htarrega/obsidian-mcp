@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import posixpath
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,8 @@ import yaml
 
 from ..config import get_config
 from ..domain.index import VaultIndex
+from ..domain.links import LinkResolver
+from ..domain.markdown_links import MarkdownLink, iter_markdown_links, iter_reference_destinations
 from ..domain.markdown_scan import frontmatter_end, mask_non_content
 from ..domain.models import (
     PreconditionRequiredError,
@@ -804,6 +807,83 @@ def _link_pattern(from_path: str) -> re.Pattern:
     )
 
 
+def _spell_like(target: str, old_path: str, source_after: str) -> str:
+    """Path to ``target`` written the way ``old_path`` was: relative stays
+    relative, a bare name stays a bare name, ``.md`` only if it had one;
+    anything else becomes the full vault path."""
+    if target.lower().endswith(".md") and not old_path.lower().endswith(".md"):
+        target = target[:-3]
+    if old_path.startswith(("./", "../")):
+        relative = posixpath.relpath(target, posixpath.dirname(source_after) or ".")
+        if old_path.startswith("./") and not relative.startswith("../"):
+            relative = "./" + relative
+        return relative
+    if "/" not in old_path.strip("/"):
+        return target.rsplit("/", 1)[-1]
+    return ("/" if old_path.startswith("/") else "") + target
+
+
+def _encode_like(path: str, old: MarkdownLink) -> str:
+    """Destination for ``path`` in the old link's style (<> or %-encoding)."""
+    if old.angle:
+        return f"<{path}{old.subpath}>"
+    encoded = path.replace("%", "%25").replace(" ", "%20")
+    if re.search(r"%2[89]", old.raw, re.IGNORECASE):
+        encoded = encoded.replace("(", "%28").replace(")", "%29")
+    return encoded + old.subpath
+
+
+@dataclass
+class _LinkRewrite:
+    text: str
+    wikilinks: int
+    markdown: int
+
+
+def _rewrite_links(
+    raw: str,
+    *,
+    source_before: str,
+    source_after: str,
+    from_path: str,
+    to_path: str,
+    wiki_re: re.Pattern,
+    resolver: LinkResolver,
+) -> _LinkRewrite:
+    """Point every link to ``from_path`` in one note at ``to_path``.
+
+    Wikilinks become [[new name...]]; Markdown links keep their style. In the
+    moved note itself (source_before == from_path), relative Markdown links
+    to other files are re-relativised from the new folder. Code, comments
+    (and, for Markdown links, frontmatter) are left alone.
+    """
+    to_stem = Path(to_path).stem
+    moved_self = source_before == from_path
+    changed_folder = posixpath.dirname(source_before) != posixpath.dirname(source_after)
+    edits: list[tuple[int, int, str]] = []
+    wikilinks = markdown = 0
+    masked = mask_non_content(raw)
+    for match in wiki_re.finditer(masked):
+        new = f"[[{to_stem}{raw[match.start(2):match.end(2)]}]]"
+        if new != raw[match.start():match.end()]:
+            edits.append((match.start(), match.end(), new))
+            wikilinks += 1
+    for link in iter_markdown_links(raw):
+        target = resolver.resolve(link.path, source=source_before)
+        if target == from_path:
+            target = to_path
+        elif not (moved_self and changed_folder and target and link.path.startswith(("./", "../"))):
+            continue
+        new = _encode_like(_spell_like(target, link.path, source_after), link)
+        if new != raw[link.start:link.end]:
+            edits.append((link.start, link.end, new))
+            markdown += 1
+    text = raw
+    for start, end, new in sorted(edits, reverse=True):
+        text = text[:start] + new + text[end:]
+    return _LinkRewrite(text, wikilinks, markdown)
+
+
 def _same_name_notes(storage: VaultStorage, stem: str, *, exclude: str = "") -> list[str]:
     """Other notes whose file name is ``stem`` (case-insensitive)."""
     wanted = stem.casefold()
@@ -822,7 +902,10 @@ def move_note(
     index: VaultIndex | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """Move or rename a note and rewrite the wikilinks that point to it.
+    """Move or rename a note and rewrite the links that point to it: wikilinks
+    and Markdown links/embeds (style kept: %20 or <>, relative or full path,
+    .md or not). The moved note's own relative Markdown links are fixed for
+    its new folder. "[ref]: path" definitions are only reported.
 
     All or nothing: the note is moved first, then the linking notes (and its
     own self-links) are rewritten; if any of that fails, the rewrites are
@@ -860,41 +943,66 @@ def move_note(
             "links are ambiguous and can't be rewritten safely. Rename the other note first."
         )
 
-    link_re = _link_pattern(from_path)
+    files = [
+        candidate.relative
+        for candidate in storage.list_files()
+        if not candidate.relative.startswith(".trash/")
+    ]
+    resolver = LinkResolver(files)
+    wiki_re = _link_pattern(from_path)
 
-    def rewrite(raw: str) -> str:
-        return link_re.sub(lambda m: f"[[{to_stem}{m.group(2)}]]", raw)
+    def rewrite(raw: str, rel: str) -> _LinkRewrite:
+        after = to_path if rel == from_path else rel
+        return _rewrite_links(
+            raw,
+            source_before=rel,
+            source_after=after,
+            from_path=from_path,
+            to_path=to_path,
+            wiki_re=wiki_re,
+            resolver=resolver,
+        )
 
-    # Every note with a link to the source; the rewrite is a second mutation,
-    # so each one must be writable before anything moves.
+    # Every note whose links change; the rewrite is a second mutation, so
+    # each one must be writable before anything moves.
     linking: list[str] = []
-    link_counts: dict[str, int] = {}
-    for candidate in storage.list_files():
-        rel = candidate.relative
+    counts: list[dict] = []
+    reference_links: list[str] = []
+    for rel in files:
         if not rel.lower().endswith(".md"):
             continue
         try:
             raw = storage.read_text(rel)
         except Exception:
             continue
-        found = len(link_re.findall(raw))
-        if found:
-            link_counts[rel] = found
-            if rel == from_path:
-                continue  # self-links: rewritten at the new path after the move
-            if rewrite(raw) != raw:
+        result = rewrite(raw, rel)
+        if result.text != raw:
+            counts.append({
+                "path": rel,
+                "count": result.wikilinks + result.markdown,
+                "wikilinks": result.wikilinks,
+                "markdown": result.markdown,
+            })
+            if rel != from_path:  # the moved note is rewritten at its new path
                 _check_write_permission(rel)
                 linking.append(rel)
+        if any(
+            resolver.resolve(dest, source=rel) == from_path
+            for dest in iter_reference_destinations(raw)
+        ):
+            reference_links.append(rel)
 
     if dry_run:
         return {
             "from": from_path,
             "to": to_path,
             "status": "dry_run",
-            "links": [{"path": rel, "count": n} for rel, n in sorted(link_counts.items())],
-            "updated_links_in": sorted(linking),
+            "links": counts,
+            "updated_links_in": linking,
+            "reference_links_not_updated": reference_links,
         }
 
+    self_links = any(item["path"] == from_path for item in counts)
     locks = []
     try:
         for rel in sorted({*linking, from_path, to_path}):
@@ -902,16 +1010,17 @@ def move_note(
         planned = []
         for rel in linking:
             raw, revision = storage.read_text_with_revision(rel)
-            after = rewrite(raw)
+            after = rewrite(raw, rel).text
             if after != raw:
                 planned.append(_PlannedWrite(rel, raw, after, revision.token))
 
         storage.move(from_path, to_path)
         try:
-            if from_path in link_counts:
+            if self_links:
                 raw, revision = storage.read_text_with_revision(to_path)
-                if rewrite(raw) != raw:
-                    planned.append(_PlannedWrite(to_path, raw, rewrite(raw), revision.token))
+                after = rewrite(raw, from_path).text
+                if after != raw:
+                    planned.append(_PlannedWrite(to_path, raw, after, revision.token))
             _commit_writes(storage, planned)
         except BaseException:
             try:
@@ -934,6 +1043,7 @@ def move_note(
         "to": to_path,
         "status": "moved",
         "updated_links_in": [write.path for write in planned if write.path != to_path],
+        "reference_links_not_updated": reference_links,
     }
 
 

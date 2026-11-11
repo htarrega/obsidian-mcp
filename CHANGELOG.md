@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing. Every edit is checked before anything is written, and notes
   already written are restored if a later write fails. Per-edit
   `expected_revision`, `dry_run`, diffs capped at 4000 characters.
+- `move_note_tool` also rewrites Markdown links and embeds to the moved note
+  (`[text](My%20note.md)`, `[text](<My note.md>)`, raw balanced parentheses),
+  keeping each link's style: encoding, `<>`, relative or full path, `.md` or
+  not, `#heading`/`#^block` and `"title"`. The moved note's own relative links
+  are fixed for its new folder. Links in code, `%%` comments and (for Markdown
+  links) frontmatter are left alone, wikilinks in code included; `[ref]: path`
+  definitions are reported in `data.reference_links_not_updated`.
 - `move_note_tool` gained `dry_run` (`data.links` with counts per note),
   rewrites the moved note's own self-links, `[[note.md]]` and table-escaped
   `[[note\|alias]]`, and refuses a new name another note already uses (or an

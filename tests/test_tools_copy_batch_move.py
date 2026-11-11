@@ -145,7 +145,7 @@ def test_move_note_skips_notes_whose_links_do_not_change(tmp_path, vault_factory
 def test_move_note_dry_run_changes_nothing(tmp_path, vault_factory):
     vault_factory({"old.md": "x", "l.md": "[[old]] [[old]]"})
     result = move_note("old.md", "new.md", dry_run=True)
-    assert result["links"] == [{"path": "l.md", "count": 2}]
+    assert result["links"] == [{"path": "l.md", "count": 2, "wikilinks": 2, "markdown": 0}]
     assert (tmp_path / "old.md").exists() and (tmp_path / "l.md").read_text() == "[[old]] [[old]]"
 
 
