@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every tool (note tools and `ob` tools) advertises one shared
+  `outputSchema`: the response envelope `{success, path?, revision?, data,
+  meta?}` (plus `code`/`message` on errors), instead of an opaque object.
+  `data` and `meta` stay free-form objects.
+- Machine-readable error codes. Every tool error is an MCP error result
+  (`isError: true`) whose structured content is `{success: false, data: {},
+  code, message}`; `code` is one of `invalid_argument`, `not_found`,
+  `already_exists`, `permission_denied`, `permanent_delete_disabled`,
+  `revision_conflict`, `precondition_required`, `unavailable`, `tool_error`,
+  `internal`. Masked errors (`MASK_ERROR_DETAILS`) keep their generic message
+  and get `internal`. The text content of an error is unchanged, and
+  `revision_conflict` / `precondition_required` keep their existing keys
+  (`error`, `path`, `expected_revision`, `actual_revision`).
 - `list_folder_tool(recursive=true, max_depth=N)` marks folders cut by the
   depth limit with `truncated: true` and `children_count`, so they are no
   longer indistinguishable from empty folders.
@@ -86,6 +99,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Task `line` numbers (`get_tasks_tool`, `read_note_tool`) are 1-based file
   lines; they used to count from the end of the frontmatter.
 - `read_note_tool` on a missing note now says `Note not found: '<path>'`.
+- FastMCP Python clients: because tools now declare a typed output schema,
+  `CallToolResult.data` is a generated object (attribute access) instead of
+  a dict; `structured_content` is the unchanged dict.
 
 ### Fixed
 

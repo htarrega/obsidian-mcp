@@ -19,7 +19,6 @@ from fastmcp.server.auth import AccessToken, AuthProvider, MultiAuth, TokenVerif
 from fastmcp.server.auth.providers.github import GitHubProvider
 from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.tools.base import ToolResult
 from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -42,11 +41,12 @@ from .envelope import (
     batch_item,
     batch_result,
     batch_summary,
+    envelope_output_schema,
     list_result,
     read_result,
     write_result,
 )
-from .errors import UserFacingErrorMiddleware
+from .errors import UserFacingErrorMiddleware, conflict_result
 from .storage.filesystem import VaultStorage
 from .storage.policy import (
     InvalidFileTypeError,
@@ -210,21 +210,32 @@ _TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
 }
 
 
-def _tool(fn):
+def _tool(fn=None, *, title: str | None = None):
     """Register ``fn`` as a tool with its annotations from _TOOL_ANNOTATIONS
-    (a missing entry fails at import, so no tool ships without hints)."""
-    return mcp.tool(annotations=_TOOL_ANNOTATIONS[fn.__name__])(fn)
+    (a missing entry fails at import, so no tool ships without hints) and the
+    shared result-envelope output schema. Usable as ``@_tool``,
+    ``@_tool(title=...)`` or ``_tool(fn)``."""
+
+    def register(function):
+        return mcp.tool(
+            title=title,
+            annotations=_TOOL_ANNOTATIONS[function.__name__],
+            output_schema=envelope_output_schema(),
+        )(function)
+
+    return register if fn is None else register(fn)
 
 
 def _mutation_boundary(function):
-    """Return expected optimistic-concurrency failures as MCP error results."""
+    """Return expected optimistic-concurrency failures as MCP error results
+    (code ``revision_conflict`` / ``precondition_required``, see errors.py)."""
 
     @wraps(function)
     def wrapped(*args, **kwargs):
         try:
             return function(*args, **kwargs)
         except (RevisionConflictError, PreconditionRequiredError) as exc:
-            return ToolResult(structured_content=exc.to_dict(), is_error=True)
+            return conflict_result(exc)
 
     return wrapped
 
@@ -289,7 +300,8 @@ that repeats it.
 Every tool returns `{success, path?, revision?, data, meta?}`. Listings put
 rows in `data.items`; `meta` carries counts, truncation and, on writes,
 `action`/`dry_run`. Real failures (bad path, permission denied, revision
-conflict) come back as MCP errors.
+conflict) come back as MCP errors with a stable `code` (`not_found`,
+`permission_denied`, `revision_conflict`, ...) in their structured content.
 
 ## Writing safely
 - Reads return a `revision`. Pass it as `expected_revision` to pin a write to
@@ -663,14 +675,17 @@ _indices: dict[str, VaultIndex] = {}
 _watchers: dict[str, VaultWatcher] = {}
 _index = _CurrentVaultIndex()
 
+_mask_error_details = mask_error_details_from_env()
 mcp = FastMCP(
     name="obsidian-mcp",
     instructions=_load_instructions(),
     auth=_build_auth(),
-    mask_error_details=mask_error_details_from_env(),
+    mask_error_details=_mask_error_details,
 )
+# Outermost first: the error middleware also codes errors raised by vault
+# resolution.
+mcp.add_middleware(UserFacingErrorMiddleware(mask_error_details=_mask_error_details))
 mcp.add_middleware(VaultResolutionMiddleware())
-mcp.add_middleware(UserFacingErrorMiddleware())
 
 
 # Gates which optional plugin-format and high-impact mutation tool groups get
@@ -907,7 +922,7 @@ def write_note_tool(
     return _write_envelope(result)
 
 
-@mcp.tool(title="Edit note section", annotations=_EDIT)
+@_tool(title="Edit note section")
 @_mutation_boundary
 def patch_note_tool(
     path: str,
@@ -1296,10 +1311,10 @@ def move_note_tool(
 
 
 if _feature_flags.enable_move:
-    mcp.tool(title="Move or rename note", annotations=_EDIT)(move_note_tool)
+    _tool(move_note_tool, title="Move or rename note")
 
 
-@mcp.tool(title="Copy note", annotations=_CREATE_ONLY)
+@_tool(title="Copy note")
 @_mutation_boundary
 def copy_note_tool(
     from_path: str, to_path: str, dry_run: bool = False, vault: str | None = None
@@ -1313,7 +1328,7 @@ def copy_note_tool(
     return _write_envelope(result)
 
 
-@mcp.tool(title="Batch edit notes", annotations=_EDIT)
+@_tool(title="Batch edit notes")
 @_mutation_boundary
 def batch_edit_tool(edits: list[dict], dry_run: bool = False, vault: str | None = None) -> dict:
     """Several edits on one or more notes, all or nothing (max 50). Edits run

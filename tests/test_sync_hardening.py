@@ -201,7 +201,7 @@ async def test_scripted_mcp_calls_return_revision_and_error_conflict(tmp_path, m
 
     async with Client(server.mcp) as client:
         read_result = await client.call_tool("read_note_tool", {"path": "note.md"})
-        revision = read_result.data["revision"]
+        revision = read_result.structured_content["revision"]
         await client.call_tool(
             "append_to_note_tool",
             {"path": "note.md", "content": "second", "expected_revision": revision},
