@@ -20,4 +20,4 @@ git push origin main
 git tag "v$VERSION"
 git push origin "v$VERSION"
 
-echo "Released v$VERSION — pipeline running at https://github.com/ykoellmann/obsidian-mcp/actions"
+echo "Released v$VERSION — pipeline running at https://github.com/htarrega/obsidian-mcp/actions"

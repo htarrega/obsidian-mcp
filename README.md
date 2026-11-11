@@ -1,6 +1,6 @@
 # obsidian-mcp
 
-[![CI](https://github.com/ykoellmann/obsidian-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ykoellmann/obsidian-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/htarrega/obsidian-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/htarrega/obsidian-mcp/actions/workflows/ci.yml)
 
 An MCP (Model Context Protocol) server for [Obsidian](https://obsidian.md) vaults. Connects Claude (or any MCP client) directly to your vault — read, write, search, navigate links, and manage notes, canvases, and kanban boards.
 
@@ -56,7 +56,7 @@ docker compose up -d   # see docker-compose.yml
 
 **From source:**
 ```bash
-git clone https://github.com/ykoellmann/obsidian-mcp.git
+git clone https://github.com/htarrega/obsidian-mcp.git
 cd obsidian-mcp
 uv sync
 uv run obsidian-remote-mcp
