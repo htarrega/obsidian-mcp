@@ -4,6 +4,8 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from .markdown_links import MarkdownLink
+
 
 @dataclass(frozen=True)
 class FileRevision:
@@ -103,6 +105,8 @@ class Note:
     tags: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
     wikilinks: list[WikiLink] = field(default_factory=list)
+    # Internal inline Markdown links/embeds "[text](dest)" / "![alt](dest)".
+    markdown_links: list[MarkdownLink] = field(default_factory=list)
     block_refs: list[BlockRef] = field(default_factory=list)
     block_links: list[str] = field(default_factory=list)
     callouts: list[Callout] = field(default_factory=list)

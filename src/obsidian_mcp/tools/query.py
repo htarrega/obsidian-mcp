@@ -5,6 +5,7 @@ from collections import deque
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from ..config import get_config
 from ..domain.index import VaultIndex
@@ -43,11 +44,27 @@ def build_link_resolver(index: VaultIndex) -> LinkResolver:
     return LinkResolver(index.list_link_targets(), index.get_alias_map())
 
 
-def find_broken_links(index: VaultIndex) -> dict:
-    """Broken wikilinks/embeds plus ambiguity warnings.
+def _note_links(note) -> list[tuple[str, str | None, bool, str]]:
+    """(target, heading, embed, format) for every wikilink and internal
+    Markdown link of a note. Markdown targets are percent-decoded; their
+    "#^block" anchors are not headings."""
+    links: list[tuple[str, str | None, bool, str]] = [
+        (wl.target, wl.heading, wl.embed, "wikilink") for wl in note.wikilinks
+    ]
+    for ml in note.markdown_links:
+        anchor = unquote(ml.subpath[1:]) if ml.subpath else ""
+        heading = anchor if anchor and not anchor.startswith("^") else None
+        links.append((ml.path, heading, ml.embed, "markdown"))
+    return links
 
-    Returns {items: [{source, link, kind, suggestion}], warnings: [...]}.
-    One item per distinct (source, link); ``kind`` is 'attachment' or 'note';
+
+def find_broken_links(index: VaultIndex) -> dict:
+    """Broken wikilinks/embeds and Markdown links plus ambiguity warnings.
+
+    Returns {items: [{source, link, kind, suggestion, format}], warnings: [...]}.
+    One item per distinct (source, link, format); ``kind`` is 'attachment' or
+    'note'; ``format`` is 'wikilink' or 'markdown' (a Markdown ``link`` is the
+    percent-decoded destination; relative ones resolve against the source);
     ``suggestion`` is the closest existing file (accent/case-insensitive name
     similarity) or None. A warning is emitted for each bare link name that
     matches several notes/files (Obsidian then picks one by path)."""
@@ -62,29 +79,31 @@ def find_broken_links(index: VaultIndex) -> dict:
             note = _load_note(cfg.vault_path, note_path)
         except Exception:
             continue
-        seen: set[str] = set()
-        for wl in note.wikilinks:
-            key = fold(wl.target)
-            if key in seen:
+        seen: set[tuple[str, str]] = set()
+        for target, _heading, _embed, fmt in _note_links(note):
+            key = fold(target)
+            if (key, fmt) in seen:
                 continue
-            seen.add(key)
-            candidates = resolver.candidates(wl.target, source=note_path)
+            seen.add((key, fmt))
+            candidates = resolver.candidates(target, source=note_path)
             if not candidates:
                 items.append({
                     "source": note_path,
-                    "link": wl.target,
-                    "kind": link_kind(wl.target),
-                    "suggestion": resolver.suggest(wl.target, include=include),
+                    "link": target,
+                    "kind": link_kind(target),
+                    "suggestion": resolver.suggest(target, include=include),
+                    "format": fmt,
                 })
                 continue
             visible = [c for c in candidates if include is None or include(c)]
-            if len(visible) > 1 and "/" not in wl.target:
+            if len(visible) > 1 and "/" not in target:
                 entry = ambiguous.setdefault(
                     key,
-                    {"type": "ambiguous_link", "link": wl.target, "candidates": sorted(visible),
+                    {"type": "ambiguous_link", "link": target, "candidates": sorted(visible),
                      "sources": []},
                 )
-                entry["sources"].append(note_path)
+                if note_path not in entry["sources"]:
+                    entry["sources"].append(note_path)
     return {"items": items, "warnings": list(ambiguous.values())}
 
 
@@ -431,34 +450,37 @@ def resolve_note_ref(ref: str, index: VaultIndex) -> tuple[str, list[str]]:
 
 
 def get_outgoing_links(path: str, index: VaultIndex) -> list[dict]:
-    """Wikilinks and embeds of one note, resolved with Obsidian semantics.
+    """Wikilinks, embeds and internal Markdown links/embeds of one note,
+    resolved with Obsidian semantics (relative Markdown paths against the
+    note's folder).
 
-    One item per distinct (target, heading, embed): {target, heading, embed,
-    kind: 'note'|'attachment', resolved: path | None, count}. A target outside
-    the caller's read scope is reported as unresolved, so its existence does
-    not leak."""
+    One item per distinct (target, heading, embed, format): {target, heading,
+    embed, kind: 'note'|'attachment', resolved: path | None, count,
+    format: 'wikilink'|'markdown'}. A target outside the caller's read scope
+    is reported as unresolved, so its existence does not leak."""
     note = parse_note(VaultStorage.from_config().read_text(path), path=path)
     scope = ReadScope.current()
     resolver = build_link_resolver(index)
     items: dict[tuple, dict] = {}
-    for link in note.wikilinks:
-        key = (fold(link.target), fold(link.heading or ""), link.embed)
+    for target, heading, embed, fmt in _note_links(note):
+        key = (fold(target), fold(heading or ""), embed, fmt)
         if key in items:
             items[key]["count"] += 1
             continue
-        resolved = resolver.resolve(link.target, source=path)
+        resolved = resolver.resolve(target, source=path)
         if resolved is not None and not scope.allows(resolved):
             resolved = None
-        kind = link_kind(resolved if resolved else link.target)
+        kind = link_kind(resolved if resolved else target)
         if resolved and resolved.lower().endswith(".md"):
             kind = "note"
         items[key] = {
-            "target": link.target,
-            "heading": link.heading,
-            "embed": link.embed,
+            "target": target,
+            "heading": heading,
+            "embed": embed,
             "kind": kind,
             "resolved": resolved,
             "count": 1,
+            "format": fmt,
         }
     return list(items.values())
 

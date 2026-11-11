@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompts and resources on.
 - Production (`deploy/env.example`): `ENABLE_MOVE=true`, and `patch_note`,
   `batch_edit`, `move_note` and `copy_note` are allowlisted.
+- Inline Markdown links and embeds (`[text](dest)`, `![alt](dest)`) count as
+  links: backlinks, orphans, broken links, link graph and vault stats now see
+  them (percent-encoded, `<...>` and `./`/`../` relative destinations; URLs
+  and links in code are ignored). `get_outgoing_links_tool` and
+  `get_broken_links_tool` items gain `format: wikilink|markdown`.
 
 ### Changed
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import posixpath
 import stat
 import threading
 import time
@@ -19,6 +20,32 @@ logger = logging.getLogger(__name__)
 
 class IndexBuildingError(Exception):
     pass
+
+
+def markdown_link_keys(dest: str, source: str) -> set[str]:
+    """Backlink keys for a Markdown link destination (already percent-decoded).
+
+    "./" and "../" paths are resolved against the linking note's folder; any
+    other path is kept both as a vault path and as a path relative to that
+    folder (Obsidian's "relative path" link format omits the "./"). A ".md"
+    suffix is dropped so the keys match those of [[wikilinks]] (note stem or
+    path without extension)."""
+    t = dest.strip().replace("\\", "/")
+    folder = posixpath.dirname(source)
+    candidates: list[str] = []
+    if t.startswith(("./", "../")):
+        candidates.append(posixpath.normpath(posixpath.join(folder, t)))
+    else:
+        candidates.append(t.lstrip("/"))
+        if folder and not t.startswith("/"):
+            candidates.append(posixpath.join(folder, t))
+    keys: set[str] = set()
+    for key in candidates:
+        if key[-3:].lower() == ".md":
+            key = key[:-3]
+        if key and key != ".":
+            keys.add(key)
+    return keys
 
 
 class VaultIndex:
@@ -300,6 +327,8 @@ class VaultIndex:
         targets: set[str] = set()
         for link in note.wikilinks:
             targets.add(link.target)
+        for md_link in note.markdown_links:
+            targets.update(markdown_link_keys(md_link.path, path))
 
         with self._lock:
             self._all_notes.add(path)

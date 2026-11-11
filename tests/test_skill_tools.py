@@ -125,6 +125,7 @@ def test_outgoing_links_resolve_and_report_broken_and_embeds(served_vault, tmp_p
     assert items[("pic.png", None, True)] == {
         "target": "pic.png", "heading": None, "embed": True,
         "kind": "attachment", "resolved": "img/pic.png", "count": 1,
+        "format": "wikilink",
     }
     assert items[("Missing note", None, False)]["resolved"] is None
     assert items[("gone.pdf", None, True)]["kind"] == "attachment"

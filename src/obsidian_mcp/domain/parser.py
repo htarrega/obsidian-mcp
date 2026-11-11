@@ -6,6 +6,7 @@ import re
 import frontmatter
 
 from ..config import ConfigError, tags_source_from_env
+from .markdown_links import iter_markdown_links
 from .markdown_scan import mask_non_content, mask_pattern
 from .models import BlockRef, Callout, Note, Task, WikiLink
 
@@ -101,6 +102,7 @@ def parse_note(raw_content: str, path: str = "", tags_source: str | None = None)
         tags=extract_tags(fm, body, source=tags_source or _default_tags_source()),
         aliases=extract_aliases(fm),
         wikilinks=extract_wikilinks(body),
+        markdown_links=list(iter_markdown_links(body)),
         block_refs=extract_block_refs(body),
         block_links=extract_block_links(body),
         callouts=extract_callouts(body),

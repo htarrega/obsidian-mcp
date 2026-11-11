@@ -52,8 +52,14 @@ These mirror an Obsidian-CLI style workflow (`read`, `outline`, `links`,
 - `get_outline` — headings `[{level, text, line}]` with 1-based file lines;
   headings inside frontmatter, code blocks or `%%` comments are ignored.
 - `get_outgoing_links` — one item per distinct link or embed:
-  `{target, heading, embed, kind: note|attachment, resolved, count}`;
-  `resolved: null` means broken (or outside the caller's read scope).
+  `{target, heading, embed, kind: note|attachment, resolved, count,
+  format: wikilink|markdown}`; `resolved: null` means broken (or outside the
+  caller's read scope). Inline Markdown links and embeds (`[text](dest)`,
+  `![alt](dest)`) are included with a percent-decoded `target`; `./` and
+  `../` paths resolve against the note's folder. URLs are not links.
+- `get_backlinks`, `get_orphans`, `get_link_graph` and `get_vault_stats`
+  count Markdown links like wikilinks: a note linked only via `[t](Note.md)`
+  has a backlink and is not an orphan.
 - `get_recent_notes(limit=20, folder="")` — notes by modification time,
   newest first, skipping `.obsidian/`, `.trash/` and `EXCLUDE_PATHS`.
 - `prepend_to_note(path, content)` — inserts `content` verbatim at the top
@@ -78,7 +84,9 @@ These mirror an Obsidian-CLI style workflow (`read`, `outline`, `links`,
   matches by file name anywhere in the vault, `[[Foo.excalidraw]]` finds
   `Foo.excalidraw.md`, and links inside code or `%% comments %%` or that are
   really data (`[[1,320,320,3]]`) are ignored. Each item is
-  `{source, link, kind: note|attachment, suggestion}`; `meta.warnings` lists
+  `{source, link, kind: note|attachment, suggestion, format: wikilink|markdown}`
+  (Markdown links are checked too, `link` being the percent-decoded
+  destination); `meta.warnings` lists
   bare names that match several files. `get_vault_stats` counts the same set,
   and `resolve_alias` accepts attachment names too.
 - `get_tasks` is paged: `limit` (default 100, max 1000), `offset`, and

@@ -805,10 +805,12 @@ def get_outline_tool(path: str, vault: str | None = None) -> dict:
 
 @_tool
 def get_outgoing_links_tool(path: str, vault: str | None = None) -> dict:
-    """Links going out of one note (wikilinks and ![[embeds]]), resolved like
-    Obsidian does. data.items: [{target, heading, embed, kind:
-    'note'|'attachment', resolved: path|null, count}]; resolved=null means
-    broken. meta: {count, resolved, unresolved}. `path` may be a note name."""
+    """Links going out of one note ([[wikilinks]], ![[embeds]] and internal
+    Markdown links/embeds [text](dest)), resolved like Obsidian does.
+    data.items: [{target, heading, embed, kind: 'note'|'attachment',
+    resolved: path|null, count, format: 'wikilink'|'markdown'}];
+    resolved=null means broken. meta: {count, resolved, unresolved}. `path`
+    may be a note name."""
     resolved, meta = _resolve_note(path)
     items = get_outgoing_links(resolved, _index)
     broken = sum(1 for item in items if item["resolved"] is None)
@@ -1341,8 +1343,9 @@ def batch_edit_tool(edits: list[dict], dry_run: bool = False, vault: str | None 
 
 @_tool
 def get_backlinks_tool(path: str, vault: str | None = None) -> dict:
-    """Notes that link to the given note (alias-aware). `path` may be a note
-    name, like read_note_tool. data.items is a list of note paths."""
+    """Notes that link to the given note via [[wikilinks]] or Markdown links
+    (alias-aware). `path` may be a note name, like read_note_tool.
+    data.items is a list of note paths."""
     try:
         resolved, meta = _resolve_note(path)
     except FileNotFoundError:
@@ -1409,11 +1412,12 @@ def lint_schema_tool(vault: str | None = None) -> dict:
 
 @_tool
 def get_broken_links_tool(vault: str | None = None) -> dict:
-    """Find wikilinks/embeds that resolve to no vault file (Obsidian rules:
-    case-insensitive, attachments matched by file name vault-wide; links in
-    code and %% comments ignored).
-    data.items: [{source, link, kind: 'note'|'attachment', suggestion}] —
-    suggestion is the closest existing path or null.
+    """Find wikilinks/embeds and internal Markdown links that resolve to no
+    vault file (Obsidian rules: case-insensitive, attachments matched by file
+    name vault-wide; links in code and %% comments ignored).
+    data.items: [{source, link, kind: 'note'|'attachment', suggestion,
+    format: 'wikilink'|'markdown'}] — suggestion is the closest existing path
+    or null.
     meta.warnings: links whose bare name matches several files."""
     report = find_broken_links(_index)
     return list_result(report["items"], meta={"warnings": report["warnings"]})
