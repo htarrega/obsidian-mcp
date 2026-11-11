@@ -50,8 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrites the moved note's own self-links, `[[note.md]]` and table-escaped
   `[[note\|alias]]`, and refuses a new name another note already uses (or an
   old name shared with another note, whose bare links would be ambiguous).
-- `patch_note_tool`, `move_note_tool`, `copy_note_tool` and
-  `batch_edit_tool` declare MCP tool annotations and titles.
+- Every tool declares MCP tool annotations (`readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint=false`) from one table
+  in `server.py`; a tool missing from it fails at import. `patch_note_tool`,
+  `move_note_tool`, `copy_note_tool` and `batch_edit_tool` also have titles.
+- `DELETE_MODE=trash|permanent` (default `trash`): what `delete_tool` does
+  when the caller omits `trash`. `permanent` needs `ALLOW_PERMANENT_DELETE`.
+- Production (`deploy/env.example`) enables every tool group (delete with
+  permanent deletion by default (`DELETE_MODE=permanent`), move, folder rename, bulk replace, canvas, excalidraw,
+  kanban, bases, every `ob` tier) with no `TOOLS_ALLOWLIST` filter, and turns
+  prompts and resources on.
 - Production (`deploy/env.example`): `ENABLE_MOVE=true`, and `patch_note`,
   `batch_edit`, `move_note` and `copy_note` are allowlisted.
 

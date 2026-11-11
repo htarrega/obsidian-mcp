@@ -230,20 +230,46 @@ def _deploy_env() -> dict[str, str]:
     return env
 
 
-async def test_deploy_allowlist_names_only_real_tools(monkeypatch):
+async def test_deploy_env_exposes_every_tool(monkeypatch):
     deploy = _deploy_env()
-    server = _reload(
-        monkeypatch,
-        ENABLE_OB=deploy["ENABLE_OB"],
-        ENABLE_OB_OPS=deploy["ENABLE_OB_OPS"],
-        ENABLE_MOVE=deploy["ENABLE_MOVE"],
-        TOOLS_ALLOWLIST=deploy["TOOLS_ALLOWLIST"],
-        ENABLE_PROMPTS=deploy["ENABLE_PROMPTS"],
-        ENABLE_RESOURCES=deploy["ENABLE_RESOURCES"],
-    )
+    flags = {name: deploy[name] for name in _ENV if name in deploy}
+    server = _reload(monkeypatch, **flags)
     tools, prompts, resources = await _surface(server)
 
     assert server._exposure["unknown_allowlist"] == []
-    assert tools == set(deploy["TOOLS_ALLOWLIST"].split(","))
-    assert 18 <= len(tools) <= 28
-    assert prompts == set() and resources == set()
+    assert server._exposure["removed_tools"] == []
+    # Every optional group is on: delete, move, folder rename, bulk replace,
+    # the plugin formats and every ob tier.
+    assert {
+        "delete_tool", "restore_tool", "list_trash_tool", "move_note_tool",
+        "rename_folder_tool", "find_replace_in_vault_tool", "read_canvas_tool",
+        "read_excalidraw_tool", "read_kanban_tool", "read_base_tool",
+        "sync_status", "sync_restart", "sync_set_conflict_strategy",
+    } <= tools
+    assert tools >= DEFAULT_TOOLS
+    assert prompts and resources
+
+
+async def test_every_tool_declares_annotations(monkeypatch):
+    server = _reload(
+        monkeypatch,
+        ENABLE_DELETE="true",
+        ENABLE_MOVE="true",
+        ENABLE_FOLDER_RENAME="true",
+        ENABLE_BULK_REPLACE="true",
+        ENABLE_CANVAS="true",
+        ENABLE_EXCALIDRAW="true",
+        ENABLE_KANBAN="true",
+        ENABLE_BASES="true",
+    )
+    tools = await server.mcp.list_tools()
+    assert len(tools) >= 60
+    missing = [tool.name for tool in tools if tool.annotations is None]
+    assert missing == []
+    read_only = {tool.name for tool in tools if tool.annotations.readOnlyHint}
+    assert {"read_note_tool", "search_notes_tool", "list_trash_tool"} <= read_only
+    assert read_only.isdisjoint({"write_note_tool", "delete_tool", "append_to_note_tool"})
+    assert all(tool.annotations.openWorldHint is False for tool in tools)
+    destructive = {tool.name for tool in tools if tool.annotations.destructiveHint}
+    assert {"delete_tool", "write_note_tool", "patch_note_text_tool"} <= destructive
+    assert destructive.isdisjoint({"append_to_note_tool", "copy_note_tool", "restore_tool"})

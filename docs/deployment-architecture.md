@@ -201,18 +201,20 @@ application. On first install the service is not started while
   (`.obsidian/`, `.trash/`, `_AI_INSTRUCTIONS.md`), `READ_PATHS`,
   `DENY_READ_PATHS`, `REQUIRE_WRITE_PRECONDITIONS` and
   `MAX_ATTACHMENT_BYTES`.
-- **High-impact tools off**: `ENABLE_DELETE`, `ALLOW_PERMANENT_DELETE`,
-  `ENABLE_FOLDER_RENAME` and `ENABLE_BULK_REPLACE` are `false`. A disabled
-  tool is not registered. `ENABLE_MOVE` is `true`: moving old notes aside
-  replaces deleting them.
-- **Exposure filters**: `TOOLS_ALLOWLIST` / `TOOLS_DENYLIST` unregister every
-  tool outside the production set (27 skill-style tools for the Mentat vault),
-  and `ENABLE_PROMPTS` / `ENABLE_RESOURCES` are `false`. Vault conventions come
-  from `CONVENTIONS_PATH` (`(000) System/_AI_INSTRUCTIONS.md`), which is
+- **High-impact tools on**: `ENABLE_DELETE`, `ALLOW_PERMANENT_DELETE`,
+  `ENABLE_MOVE`, `ENABLE_FOLDER_RENAME`, `ENABLE_BULK_REPLACE` and the
+  canvas/excalidraw/kanban/bases groups are `true`, so the full tool surface
+  is available to every authenticated client. The path rules above still
+  apply to every tool. Each tool declares MCP annotations (read-only,
+  destructive, idempotent) so clients can ask before destructive calls.
+- **Exposure filters**: `TOOLS_ALLOWLIST` is empty (no filter) and
+  `ENABLE_PROMPTS` / `ENABLE_RESOURCES` are `true`; listing tools in
+  `TOOLS_ALLOWLIST` trims the surface again. Vault conventions come from
+  `CONVENTIONS_PATH` (`(000) System/_AI_INSTRUCTIONS.md`), which is
   write-denied.
 - **Hostile-input robustness**: `MASK_ERROR_DETAILS`, `REGEX_MAX_LENGTH`,
   `REGEX_MAX_REPEAT` and `REGEX_TIMEOUT_SECONDS`.
-- **ob**: tiers `ENABLE_OB` / `ENABLE_OB_OPS` / `ENABLE_OB_ADMIN` (admin off),
+- **ob**: tiers `ENABLE_OB` / `ENABLE_OB_OPS` / `ENABLE_OB_ADMIN` (all on),
   argument allowlist, `OB_COMMAND_TIMEOUT`, `OB_RESTART_COOLDOWN`, minimal
   environment and redaction of all output.
 - **Process sandbox**: `obsidian` user without a shell, `NoNewPrivileges`,

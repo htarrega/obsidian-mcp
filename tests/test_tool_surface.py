@@ -234,6 +234,40 @@ def test_delete_tool_trashes_a_folder_with_its_subtree(tmp_path, served_vault):
     assert (tmp_path / ".trash" / "folder" / "sub" / "b.md").exists()
 
 
+def test_delete_mode_permanent_deletes_without_trash(tmp_path, served_vault, monkeypatch):
+    monkeypatch.setenv("ALLOW_PERMANENT_DELETE", "true")
+    monkeypatch.setenv("DELETE_MODE", "permanent")
+    served_vault({"a.md": "body", "folder/b.md": "body"})
+
+    assert server.delete_tool("a.md")["data"]["trash"] is False
+    server.delete_tool("folder")
+    assert not (tmp_path / "a.md").exists() and not (tmp_path / "folder").exists()
+    assert not (tmp_path / ".trash").exists()
+
+
+def test_delete_mode_permanent_still_honours_explicit_trash(tmp_path, served_vault, monkeypatch):
+    monkeypatch.setenv("ALLOW_PERMANENT_DELETE", "true")
+    monkeypatch.setenv("DELETE_MODE", "permanent")
+    served_vault({"a.md": "body"})
+    server.delete_tool("a.md", trash=True)
+    assert (tmp_path / ".trash" / "a.md").exists()
+
+
+def test_delete_mode_permanent_needs_allow_permanent_delete(tmp_path, served_vault, monkeypatch):
+    monkeypatch.setenv("DELETE_MODE", "permanent")
+    served_vault({"a.md": "body"})
+    with pytest.raises(Exception, match="[Pp]ermanent deletion is disabled"):
+        server.delete_tool("a.md")
+    assert (tmp_path / "a.md").exists()
+
+
+def test_delete_mode_rejects_unknown_values(served_vault, monkeypatch):
+    monkeypatch.setenv("DELETE_MODE", "shred")
+    served_vault({"a.md": "body"})
+    with pytest.raises(ValueError, match="DELETE_MODE"):
+        server.delete_tool("a.md")
+
+
 def test_delete_tool_rejects_expected_revision_for_a_folder(served_vault):
     served_vault({"folder/a.md": "body"})
     with pytest.raises(ValueError, match="folder has no single"):
